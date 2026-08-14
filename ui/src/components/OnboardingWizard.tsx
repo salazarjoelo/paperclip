@@ -200,13 +200,17 @@ export function OnboardingWizard() {
   // the same question as whether to mount - see the gate below.
   // Any error at all, not only one that left the list empty.
   //
-  // The companies cache is not scoped to an account and survives sign-out -
-  // `useSignOut` invalidates only the session and health queries, and
-  // invalidation keeps serving the old data anyway. So after A signs out and B
-  // signs in, a *failed* refetch leaves A's companies in hand. Trusting a
-  // non-empty list there would find A's company id in it, call the draft
-  // owned, and hand A's onboarding to B - which is the exact leak this whole
-  // change exists to close, reached through a different door.
+  // A non-empty list is also not proof that *this* account owns it. Sign-out
+  // now resets every account-scoped cache entry rather than invalidating two
+  // of them (see `useSignOut`), so the ordinary A-signs-out-then-B-signs-in
+  // path no longer leaves A's companies in hand. That fix covers the sign-out
+  // button; it does not cover every way the signed-in account can change under
+  // a cache this component did not fetch - a session that lapses server-side,
+  // an account switched in another tab, a consumer that supplies the company
+  // context from somewhere else entirely. Trusting a non-empty list would find
+  // A's company id in it, call the draft owned, and hand A's onboarding to B,
+  // which is the exact leak this whole change exists to close, reached through
+  // a different door. This gate stays independent of that fix.
   //
   // The cost is small and recoverable: during a transient refetch failure the
   // draft is not restored. It is not deleted either, and the next successful
