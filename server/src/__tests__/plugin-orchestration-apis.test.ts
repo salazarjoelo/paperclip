@@ -880,7 +880,11 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const [wakeupRequest] = await db
       .select()
       .from(agentWakeupRequests)
-      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue_commented"),
+      ));
     expect(wakeupRequest).toMatchObject({
       reason: "issue_commented",
       requestedByActorType: "user",

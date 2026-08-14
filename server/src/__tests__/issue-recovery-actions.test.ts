@@ -882,7 +882,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: managerId,
+      assigneeAgentId: coderId,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
@@ -1412,7 +1412,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
-      .set({ status: "blocked", assigneeAgentId: managerId })
+      .set({ status: "blocked", assigneeAgentId: coderId })
       .where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -1832,7 +1832,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  it("allows the named recovery owner to resolve a board-owned source recovery action", async () => {
+  it("does not let the named recovery owner resolve a board-owned source recovery action", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
@@ -1866,7 +1866,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssueId,
     });
 
-    const resolved = await request(app)
+    await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
       .send({
         actionId: action.id,
@@ -1874,17 +1874,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         sourceIssueStatus: "done",
         resolutionNote: "Recovery owner verified the work was intentionally completed.",
       })
-      .expect(200);
+      .expect(403);
 
-    expect(resolved.body.issue).toMatchObject({
-      id: sourceIssueId,
-      status: "done",
-      activeRecoveryAction: null,
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
     });
-    expect(resolved.body.recoveryAction).toMatchObject({
-      id: action.id,
-      status: "resolved",
-      outcome: "owner_completed",
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolvedAt: null,
     });
   });
 
