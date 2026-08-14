@@ -5395,8 +5395,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.agents) {
+        const selectedAgentBySlug = new Map(plan.selectedAgents.map((agent) => [agent.slug, agent]));
         for (const planAgent of plan.preview.plan.agentPlans) {
-          const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
+          const manifestAgent = selectedAgentBySlug.get(planAgent.slug);
           if (!manifestAgent) continue;
           if (planAgent.action === "skip") {
             resultAgents.push({
@@ -5607,8 +5608,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.projects) {
+        const manifestProjectBySlug = new Map(sourceManifest.projects.map((project) => [project.slug, project]));
         for (const planProject of plan.preview.plan.projectPlans) {
-          const manifestProject = sourceManifest.projects.find((project) => project.slug === planProject.slug);
+          const manifestProject = manifestProjectBySlug.get(planProject.slug);
           if (!manifestProject) continue;
           if (planProject.action === "skip") {
             resultProjects.push({
@@ -5927,10 +5929,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
             issueStatus = "todo";
           }
-          const resolvedLabelIds: string[] = [];
+          const resolvedLabelIdSet = new Set<string>();
           for (const name of manifestIssue.labelNames ?? []) {
             const labelId = labelIdByName.get(name);
-            if (labelId && !resolvedLabelIds.includes(labelId)) resolvedLabelIds.push(labelId);
+            if (labelId) resolvedLabelIdSet.add(labelId);
           }
           const legacyLabelIds = manifestIssue.labelIds ?? [];
           const unresolvedLegacyCount = legacyLabelIds.filter((labelId) => !existingTargetLabelIds.has(labelId)).length;
@@ -5938,10 +5940,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} dropped ${unresolvedLegacyCount} label reference${unresolvedLegacyCount === 1 ? "" : "s"} because the bundle carries raw label ids that do not exist in the target company.`);
           }
           for (const labelId of legacyLabelIds) {
-            if (existingTargetLabelIds.has(labelId) && !resolvedLabelIds.includes(labelId)) {
-              resolvedLabelIds.push(labelId);
-            }
+            if (existingTargetLabelIds.has(labelId)) resolvedLabelIdSet.add(labelId);
           }
+          const resolvedLabelIds = Array.from(resolvedLabelIdSet);
           // Pre-generate the issue id so this issue's comments, documents, and
           // attachments can reference it without waiting on a per-issue insert
           // round-trip. The row itself is buffered and flushed after the loop.

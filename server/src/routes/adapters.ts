@@ -713,5 +713,132 @@ export function adapterRoutes() {
     res.type("application/javascript").send(source);
   });
 
+  // ── GET /api/adapters/health ─────────────────────────────────────────────
+  // Aggregate health-check for ALL registered adapters.
+  // Runs testEnvironment() on each enabled adapter and returns a summary.
+  // This endpoint lets operators detect silent adapter failures (e.g.
+  // corrupted adapter-plugins.json, missing env vars, broken npm packages)
+  // before agents start failing on execution.
+  router.get("/adapters/health", async (_req, res) => {
+    assertBoardOrgAccess(_req);
+
+    const adapters = listEnabledServerAdapters();
+    const externalRecords = new Map(
+      listAdapterPlugins().map((r) => [r.type, r]),
+    );
+
+    const results = await Promise.all(
+      adapters.map(async (adapter) => {
+        const externalRecord = externalRecords.get(adapter.type);
+        try {
+          if (!adapter.testEnvironment) {
+            return {
+              type: adapter.type,
+              healthy: true,
+              status: "pass" as const,
+              source: externalRecord ? "external" as const : "builtin" as const,
+              version: externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined,
+              checks: [],
+              message: "No testEnvironment method available; assuming healthy.",
+            };
+          }
+          const testResult = await adapter.testEnvironment({
+            companyId: "",
+            adapterType: adapter.type,
+            config: {},
+          });
+          return {
+            type: adapter.type,
+            healthy: testResult.status === "pass",
+            status: testResult.status,
+            source: externalRecord ? "external" as const : "builtin" as const,
+            version: externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined,
+            checks: testResult.checks ?? [],
+            testedAt: testResult.testedAt,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err, type: adapter.type }, "Adapter health-check failed");
+          return {
+            type: adapter.type,
+            healthy: false,
+            status: "fail" as const,
+            source: externalRecord ? "external" as const : "builtin" as const,
+            version: externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined,
+            checks: [],
+            message: `Health-check threw: ${message}`,
+          };
+        }
+      }),
+    );
+
+    const healthyCount = results.filter((r) => r.healthy).length;
+    const totalCount = results.length;
+
+    res.json({
+      healthy: healthyCount === totalCount,
+      summary: `${healthyCount}/${totalCount} adapters healthy`,
+      healthyCount,
+      totalCount,
+      adapters: results.sort((a, b) => a.type.localeCompare(b.type)),
+    });
+  });
+
+  // ── GET /api/adapters/:type/health ───────────────────────────────────────
+  // Individual health-check for a single adapter.
+  // Runs testEnvironment() on the specified adapter and returns the full
+  // diagnostic result. Useful for debugging a specific adapter failure.
+  router.get("/adapters/:type/health", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { type } = req.params;
+
+    const adapter = findActiveServerAdapter(type);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${type}" is not registered.` });
+      return;
+    }
+
+    const externalRecord = getAdapterPluginByType(type);
+
+    try {
+      if (!adapter.testEnvironment) {
+        res.json({
+          type,
+          healthy: true,
+          status: "pass",
+          source: externalRecord ? "external" : "builtin",
+          version: externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined,
+          checks: [],
+          message: "No testEnvironment method available; assuming healthy.",
+        });
+        return;
+      }
+      const testResult = await adapter.testEnvironment({
+        companyId: "",
+        adapterType: type,
+        config: {},
+      });
+      res.json({
+        type,
+        healthy: testResult.status === "pass",
+        status: testResult.status,
+        source: externalRecord ? "external" : "builtin",
+        version: externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined,
+        checks: testResult.checks ?? [],
+        testedAt: testResult.testedAt,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, type }, "Adapter health-check failed");
+      res.status(500).json({
+        type,
+        healthy: false,
+        status: "fail",
+        source: externalRecord ? "external" : "builtin",
+        error: `Health-check threw: ${message}`,
+      });
+    }
+  });
+
   return router;
 }
