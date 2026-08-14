@@ -1167,6 +1167,25 @@
       "error": "Error"
     }
   },
+  "new_agent_page": {
+    "title": "Nuevo Agente",
+    "subtitle": "Configuración avanzada de agente",
+    "agent_name_placeholder": "Nombre del agente",
+    "title_placeholder": "Título (ej. Director de Ingeniería)",
+    "company_skills": "Habilidades de la empresa",
+    "skills_optional_desc": "Habilidades opcionales de la biblioteca de la empresa. Las habilidades de ejecución integradas de Edugame Digital se añaden automáticamente.",
+    "no_optional_skills": "Aún no hay habilidades opcionales instaladas.",
+    "will_be_ceo": "Este será el CEO",
+    "cancel": "Cancelar",
+    "testing": "Probando...",
+    "test_agent": "Probar Agente",
+    "creating": "Creando…",
+    "create_agent": "Crear agente",
+    "failed_create_agent": "Error al crear el agente",
+    "opencode_requires_model": "OpenCode requiere un modelo explícito en formato proveedor/modelo.",
+    "breadcrumb_agents": "Agentes",
+    "breadcrumb_new_agent": "Nuevo Agente"
+  },
   "invite_landing": {
     "title_bootstrap": "Configura tu instancia de Edugame Digital",
     "title_join_company": "Unirse a {{name}}",
