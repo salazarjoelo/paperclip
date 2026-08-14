@@ -34,6 +34,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   createTreeHold: vi.fn(),
   releaseTreeHold: vi.fn(),
   archiveFromInbox: vi.fn(),
+  unarchiveFromInbox: vi.fn(),
   addComment: vi.fn(),
   cancelComment: vi.fn(),
   upsertFeedbackVote: vi.fn(),
@@ -187,12 +188,18 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+const mockOpenNewIssue = vi.hoisted(() => vi.fn());
+const mockOpenNewProject = vi.hoisted(() => vi.fn());
+const mockOpenNewGoal = vi.hoisted(() => vi.fn());
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
   }),
   useDialogActions: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
+    openNewProject: mockOpenNewProject,
+    openNewGoal: mockOpenNewGoal,
   }),
 }));
 
@@ -1038,6 +1045,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
+    mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -1075,6 +1083,9 @@ describe("IssueDetail", () => {
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
     mockNavigate.mockClear();
+    mockOpenNewIssue.mockClear();
+    mockOpenNewProject.mockClear();
+    mockOpenNewGoal.mockClear();
     mockLocation.pathname = "/issues/PAP-1";
     mockLocation.search = "";
     mockLocation.hash = "";
@@ -1114,6 +1125,133 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("renders the full sub-task tree below the title in the chat center pane", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({
+        id: "child-1",
+        parentId: "issue-1",
+        identifier: "PAP-2",
+        issueNumber: 2,
+        title: "Child task",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const title = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Issue detail smoke",
+    );
+    const subTasks = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Sub-issues",
+    );
+    expect(title).toBeDefined();
+    expect(subTasks).toBeDefined();
+    expect(title!.compareDocumentPosition(subTasks!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(mockIssuesListRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createIssueLabel: "Sub-task",
+        showProgressSummary: true,
+      }),
+    );
+  });
+
+  it("hides the full sub-task tree when the task has no subtasks", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Sub-issues");
+    expect(mockIssuesListRender.mock.calls).not.toContainEqual([
+      expect.objectContaining({ isLoading: false }),
+    ]);
+  });
+
+  it("keeps the properties panel stable across unrelated chat-detail renders", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const detail = (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    // React Query returns a new mutation result object on render. The panel
+    // effect must depend on the stable mutate function rather than that wrapper
+    // object, or openPanel's state update recursively renders
+    // IssueDetail until React throws "Maximum update depth exceeded".
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+  });
+
+  it("does not loop openPanel when the sub-task list query is still loading (PAP-508)", async () => {
+    // While the descendant-issues query is still in flight, `data` is undefined.
+    // A literal `= []` default for that `data` mints a new array reference on
+    // every render, which destabilizes the child-derived panel key, re-firing
+    // openPanel each render until
+    // React throws "Maximum update depth exceeded". Keep the list query pending
+    // so `data` stays undefined and the stabilization of the empty default is
+    // the only thing preventing the loop. A fresh root element is rendered each
+    // pass so React actually re-renders IssueDetail (a reused element reference
+    // lets the reconciler bail out, masking the loop).
+    const pendingListRequest = createDeferred<Issue[]>();
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockReturnValue(pendingListRequest.promise);
+    const renderDetail = () => (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+
+    pendingListRequest.resolve([]);
+    await flushReact();
   });
 
   it("does not load or render decision sections in the issue header", async () => {
@@ -1192,7 +1330,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+  it("removes an inbox-origin archived issue and restores it when the toast Undo action is pressed", async () => {
     const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
     const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
     const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
@@ -1205,6 +1343,12 @@ describe("IssueDetail", () => {
       "with-routine-executions",
       "live-descendant-summary",
     ] as const;
+    const compactKey = [
+      ...queryKeys.issues.list("company-1"),
+      "compact",
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
     const touchedKey = [
       ...queryKeys.issues.listTouchedByMe("company-1"),
       "with-routine-executions",
@@ -1212,6 +1356,7 @@ describe("IssueDetail", () => {
     ] as const;
     const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
     queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(compactKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
 
@@ -1236,6 +1381,7 @@ describe("IssueDetail", () => {
 
     await waitForAssertion(() => {
       expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(mockNavigate).not.toHaveBeenCalled();
@@ -1247,7 +1393,101 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
-    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
+    const archiveToast = mockPushToast.mock.calls
+      .map(([toast]) => toast)
+      .find((toast) => toast.title === "Task archived from inbox");
+    expect(archiveToast).toMatchObject({
+      title: "Task archived from inbox",
+      tone: "success",
+      action: { label: "Undo" },
+    });
+    expect(archiveToast?.action?.onClick).toEqual(expect.any(Function));
+
+    const staleInboxFetch = createDeferred<Issue[]>();
+    const staleInboxRequest = queryClient.fetchQuery({
+      queryKey: mineKey,
+      queryFn: () => staleInboxFetch.promise,
+    }).catch(() => undefined);
+    const staleCompactFetch = createDeferred<Issue[]>();
+    const staleCompactRequest = queryClient.fetchQuery({
+      queryKey: compactKey,
+      queryFn: () => staleCompactFetch.promise,
+    }).catch(() => undefined);
+    await waitForAssertion(() => {
+      expect(queryClient.isFetching({ queryKey: mineKey })).toBe(1);
+      expect(queryClient.isFetching({ queryKey: compactKey })).toBe(1);
+    });
+
+    await act(async () => {
+      archiveToast.action.onClick();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    staleInboxFetch.resolve([otherIssue]);
+    staleCompactFetch.resolve([otherIssue]);
+    await staleInboxRequest;
+    await staleCompactRequest;
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Task restored to inbox", tone: "success" });
+    });
+  });
+
+  it("keeps an archived task hidden and reports an error when toast Undo fails", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.unarchiveFromInbox.mockRejectedValue(new Error("Inbox policy denied"));
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    queryClient.setQueryData<Issue[]>(mineKey, [issue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)).toEqual([]);
+    });
+
+    const archiveToast = mockPushToast.mock.calls
+      .map(([toast]) => toast)
+      .find((toast) => toast.title === "Task archived from inbox");
+    expect(archiveToast?.action?.onClick).toEqual(expect.any(Function));
+
+    await act(async () => {
+      archiveToast.action.onClick();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+      expect(queryClient.getQueryData<Issue[]>(mineKey)).toEqual([]);
+      expect(mockPushToast).toHaveBeenCalledWith({
+        title: "Undo failed",
+        body: "Inbox policy denied",
+        tone: "error",
+      });
+    });
   });
 
   it("shows assignee and originating avatars in the issue header metadata", async () => {
@@ -1517,6 +1757,102 @@ describe("IssueDetail", () => {
     });
 
     expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
+    mockHeartbeatsApi.cancel.mockClear();
+  });
+
+  it("does not rebind a queued message when another run becomes live before its request settles", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-original",
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-original",
+        status: "running",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: "2026-04-21T00:00:01.000Z",
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const initialProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      void initialProps.onAdd("Keep this bound to the original run");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const replacementRun = {
+      id: "run-replacement",
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      contextCommentId: null,
+      contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:02.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-21T00:00:02.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "codex_local",
+      issueId: "issue-1",
+    };
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.issues.liveRuns("issue-1"), [replacementRun]);
+      queryClient.setQueryData(queryKeys.issues.activeRun("issue-1"), replacementRun);
+    });
+    await flushReact();
+
+    const replacementProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const optimisticComment = replacementProps.comments?.find(
+      (comment) => comment.body === "Keep this bound to the original run",
+    );
+    expect(optimisticComment).toMatchObject({
+      clientStatus: "queued",
+      queueTargetRunId: "run-original",
+    });
+
+    await act(async () => {
+      await replacementProps.onInterruptQueued(optimisticComment!.queueTargetRunId!);
+    });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-original");
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalledWith("run-replacement");
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Keep this bound to the original run" }));
+    });
+    await flushReact();
     mockHeartbeatsApi.cancel.mockClear();
   });
 

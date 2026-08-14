@@ -9,12 +9,13 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatThread } from "./TaskChatThread";
 
 const transcriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
+const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: () => transcriptState,
 }));
 vi.mock("@/context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false }),
+  useSidebar: () => ({ isMobile: sidebarState.isMobile }),
 }));
 vi.mock("@/hooks/useIssuePlanDocument", () => ({
   useIssuePlanDocument: () => ({ data: null }),
@@ -35,6 +36,7 @@ let root: Root | null = null;
 beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
+  sidebarState.isMobile = false;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -52,6 +54,19 @@ function render(ui: ReactElement) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it("keeps the composer dock aligned with the thread's horizontal padding", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+      />,
+    );
+
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    expect(dock?.classList).toContain("px-4");
+    expect(dock?.classList).not.toContain("px-1");
+  });
+
   it("forwards draftKey so the composer restores a task's saved draft", () => {
     localStorage.setItem("task-chat-draft:issue-1", "half-written thought");
 
@@ -65,6 +80,108 @@ describe("TaskChatThread draft pass-through", () => {
 
     expect(container.querySelector('[data-testid="mock-editor"]')?.textContent)
       .toBe("half-written thought");
+  });
+});
+
+describe("TaskChatThread composer alignment (PAP-498)", () => {
+  it("matches the thread width on mobile and stays narrower on larger screens", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
+
+    const dock = container
+      .querySelector('[data-testid="mock-editor"]')
+      ?.closest("div.sticky") as HTMLElement | null;
+
+    expect(dock?.className).toContain("w-full");
+    expect(dock?.className).toContain("md:w-(--pct-80)");
+  });
+});
+
+describe("TaskChatThread queued message actions", () => {
+  it("interrupts the exact run that a persisted queued message is waiting behind", () => {
+    const onInterruptQueued = vi.fn(async () => {});
+    const queuedComment = {
+      id: "comment-queued",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "user" as const,
+      authorAgentId: null,
+      authorUserId: "user-1",
+      body: "Use the latest requirements instead.",
+      presentation: null,
+      metadata: null,
+      queueState: "queued" as const,
+      queueTargetRunId: "run-active",
+      createdAt: new Date("2026-08-14T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+    };
+
+    render(
+      <TaskChatThread
+        comments={[queuedComment]}
+        onAdd={async () => {}}
+        onInterruptQueued={onInterruptQueued}
+      />,
+    );
+
+    const interrupt = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Interrupt",
+    );
+    expect(container.textContent).toContain("Queued");
+    expect(interrupt).not.toBeUndefined();
+
+    flushSync(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledOnce();
+    expect(onInterruptQueued).toHaveBeenCalledWith("run-active");
+  });
+
+  it("disables the action while the queued run is being interrupted", () => {
+    render(
+      <TaskChatThread
+        comments={[{
+          id: "comment-queued",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "user-1",
+          body: "Use the latest requirements instead.",
+          presentation: null,
+          metadata: null,
+          clientStatus: "queued",
+          queueTargetRunId: "run-active",
+          createdAt: new Date("2026-08-14T12:00:00.000Z"),
+          updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+        }]}
+        onAdd={async () => {}}
+        onInterruptQueued={async () => {}}
+        interruptingQueuedRunId="run-active"
+      />,
+    );
+
+    const interrupting = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Interrupting…",
+    );
+    expect(interrupting).not.toBeUndefined();
+    expect(interrupting?.disabled).toBe(true);
+  });
+});
+
+describe("TaskChatThread mobile composer dock (PAP-495)", () => {
+  it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
+    sidebarState.isMobile = true;
+
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} draftKey="task-chat-draft:issue-mobile" />);
+
+    const dock = container
+      .querySelector('[data-testid="mock-editor"]')
+      ?.closest("div.sticky") as HTMLElement | null;
+
+    expect(dock).not.toBeNull();
+    // Bottom offset comes from --tc-composer-bottom (Layout raises it to the nav
+    // height while the nav is on screen) — NOT the raw safe-area dock, which is
+    // what let the nav occlude the action row before PAP-495.
+    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
+    expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
   });
 });
 
@@ -108,8 +225,11 @@ describe("TaskChatThread live transcript", () => {
 
     const tail = container.querySelector('[data-testid="task-chat-live-transcript"]');
     expect(tail).not.toBeNull();
-    // Clean content survives: streamed reply markdown + tool row.
+    // Clean content survives: streamed reply markdown + compact phase summary.
     expect(tail!.textContent).toContain("Streaming through the shared renderer");
+    const phaseSummary = tail!.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => phaseSummary!.click());
     expect(tail!.textContent).toContain("src/app.ts");
     // None of the debug plumbing reaches the thread.
     for (const noise of ["INITMARKER", "SYSTEMNOISE", "STDOUTNOISE", "STDERRNOISE"]) {

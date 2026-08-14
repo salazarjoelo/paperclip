@@ -66,7 +66,6 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
-  getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -137,7 +136,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
-import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -153,6 +152,8 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
+import { privateJsonEtag } from "../middleware/private-json-etag.js";
+import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -178,7 +179,10 @@ import {
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
+import {
+  executionWorkspaceService as executionWorkspaceServiceDirect,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS,
+} from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1835,7 +1839,14 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  requestAddsExplicitBlockers?: boolean;
 }) {
+  // A request that wires a non-empty blockedByIssueIds list is declaring that
+  // the issue is waiting on other work. The implicit reopen exists for plain
+  // conversational comments ("please continue"), not structured dependency
+  // edits — flipping to todo here would contradict the caller's stated intent
+  // in the same request.
+  if (input.requestAddsExplicitBlockers) return false;
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -2745,6 +2756,25 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
+    shouldCache: (issue) => issue !== null,
+  });
+  const memoizeIssueReadDecision = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof decideIssueAccess>>>();
+
+  function getIssueById(req: Request, id: string) {
+    if (req.method !== "GET") return svc.getById(id);
+    return memoizeIssueRead(req, id, () => svc.getById(id));
+  }
+
+  const issueDetailEtag = privateJsonEtag();
+  router.use((req, res, next) => {
+    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path)) {
+      issueDetailEtag(req, res, next);
+      return;
+    }
+    next();
+  });
+
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "taskWatchdogService",
@@ -3780,7 +3810,9 @@ export function issueRoutes(
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
-    const decision = await decideIssueAccess(req, issue, "issue:read");
+    const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
+    const value = memoizeIssueReadDecision(req, key, () => decideIssueAccess(req, issue, "issue:read"));
+    const decision = await value;
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;
@@ -5137,14 +5169,159 @@ export function issueRoutes(
     return workspace;
   }
 
-  function respondClosedIssueExecutionWorkspace(
+  // Reopen the closed isolated workspace that a guard found, so the request can
+  // continue. The return value tells the caller what happened:
+  //   "reopened"    - this request rebuilt the workspace and set the
+  //                   reopen-pending flag. The caller must install the
+  //                   consumption guard so the flag cannot leak.
+  //   "already-open" - a concurrent request already reopened the workspace, so
+  //                   this request did not set the flag. The caller continues but
+  //                   must not install the guard, or it can clear the flag that
+  //                   the other request still owns.
+  //   null          - this function sent an error response, so the caller stops.
+  // The reopen is scoped to the issue company and project inside the service, and
+  // it runs only after the route already authorized the request on the issue.
+  async function reopenClosedIssueExecutionWorkspaceOrRespond(
+    req: Request,
     res: Response,
-    workspace: Pick<ExecutionWorkspace, "closedAt" | "id" | "mode" | "name" | "status">,
-  ) {
-    res.status(409).json({
-      error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
-      executionWorkspace: workspace,
+    issue: { id: string; companyId: string; projectId?: string | null },
+    workspace: Pick<ExecutionWorkspace, "id">,
+  ): Promise<{ outcome: "reopened" | "already-open"; generation: number } | null> {
+    const actor = getActorInfo(req);
+    const result = await executionWorkspacesSvc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+      workspaceId: workspace.id,
+      issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
+      actor: { agentId: actor.agentId, actorType: actor.actorType },
     });
+    if (result.ok) {
+      return { outcome: result.reopened ? "reopened" : "already-open", generation: result.generation };
+    }
+    if (result.code === "not_reopenable") {
+      res.status(409).json({ error: "This issue is linked to a closed workspace that cannot be reopened." });
+    } else {
+      res.status(503).json({ error: "Could not reopen the workspace for this issue. Please try again." });
+    }
+    return null;
+  }
+
+  // The keepalive re-stamps the reopen-pending flag on this interval while a
+  // consuming request is in flight. The interval is one fifth of the stale grace
+  // period, so several re-stamps land before the reaper could treat the flag as
+  // stranded. This keeps a live but slow request's fence against the reaper.
+  const REOPEN_PENDING_REFRESH_INTERVAL_MS = Math.floor(
+    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS / 5,
+  );
+
+  // Guard a reopen against a caller that never consumes it.
+  // `reopenClosedIssueExecutionWorkspaceOrRespond` publishes the rebuilt worktree
+  // as active and sets the reopen-pending flag while the source issue is still
+  // terminal. The route then moves the issue out of the terminal state, and the
+  // terminal reaper clears the flag once it sees the non-terminal issue. If the
+  // route mutation returns null, throws, or leaves the issue terminal, the flag
+  // stays set and both the reaper and the archive route skip the row forever, so
+  // the rebuilt worktree leaks and no path can reclaim it.
+  //
+  // This guard runs when the response ends, so it covers every exit: a success, a
+  // rejected mutation, and a thrown error. It reads the final issue status through
+  // a getter. When the issue is null or still terminal, it clears the flag so the
+  // reaper can reclaim the worktree. When the issue left the terminal state, it
+  // does nothing and the reaper clears the flag. The guard never touches the
+  // response, and the underlying clear is idempotent.
+  function guardReopenedWorkspaceConsumption(input: {
+    req: Request;
+    res: Response;
+    issue: { id: string; companyId: string };
+    workspace: Pick<ExecutionWorkspace, "id"> | null;
+    generation: number | null;
+    finalIssueStatus: () => string | null | undefined;
+  }): void {
+    const { req, res, issue, workspace, generation, finalIssueStatus } = input;
+    if (!workspace || generation === null) return;
+    // Re-stamp the reopen-pending flag while this request is in flight. The
+    // request that consumes the rebuilt worktree is an HTTP request, not a
+    // heartbeat run, so the terminal reaper cannot see it through
+    // `workspaceHasActiveRun`. A request that outruns the stale grace period
+    // would let the reaper clear the live fence, and a later sweep would archive
+    // and destroy the worktree under the request. The keepalive re-stamps the
+    // timestamp on an interval below the grace, so the flag never looks stranded
+    // while the request lives. The refresh runs only while the flag is still set
+    // and the generation still matches, so it never revives a cleared flag and
+    // never refreshes a newer reopen's fence.
+    const keepAlive = setInterval(() => {
+      void executionWorkspacesSvc
+        .refreshReopenPendingConsumption({
+          workspaceId: workspace.id,
+          expectedGeneration: generation,
+        })
+        .then((result) => {
+          // The fence is no longer ours: a clear removed the flag, or a newer
+          // reopen or an archive raised the generation. Stop the keepalive so it
+          // does not re-stamp another owner's row.
+          if (!result.refreshed) clearInterval(keepAlive);
+        })
+        .catch((err) => {
+          // A transient database error must not stop the keepalive. Keep the
+          // interval so the next tick retries before the grace period elapses.
+          logger.warn(
+            { err, issueId: issue.id, executionWorkspaceId: workspace.id },
+            "failed to refresh the reopen-pending flag for an in-flight request",
+          );
+        });
+    }, REOPEN_PENDING_REFRESH_INTERVAL_MS);
+    // Do not keep the event loop alive for the keepalive alone.
+    keepAlive.unref?.();
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(keepAlive);
+      const status = finalIssueStatus();
+      if (typeof status === "string" && !isClosedIssueStatus(status)) return;
+      const actor = getActorInfo(req);
+      void clearReopenPendingConsumptionWithRetry({
+        workspaceId: workspace.id,
+        issue: { id: issue.id, companyId: issue.companyId },
+        actor: { agentId: actor.agentId, actorType: actor.actorType },
+        expectedGeneration: generation,
+      });
+    };
+    res.once("finish", settle);
+    res.once("close", settle);
+  }
+
+  // Clear the reopen-pending flag with a bounded retry. The response already
+  // ended when this runs, so it is a background best-effort. A transient database
+  // error must not strand the flag: while the flag stays set, the terminal reaper
+  // skips the workspace and the archive route rejects it, so the rebuilt worktree
+  // leaks. The clear is idempotent, so a retry after a partial failure is safe.
+  // The method returns { cleared: false } without an error when the flag is
+  // already clear, so that path does not retry.
+  async function clearReopenPendingConsumptionWithRetry(input: {
+    workspaceId: string;
+    issue: { id: string; companyId: string };
+    actor: { agentId: string | null; actorType: string };
+    expectedGeneration: number;
+  }): Promise<void> {
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await executionWorkspacesSvc.clearReopenPendingConsumptionForUnconsumedReopen(input);
+        return;
+      } catch (err) {
+        if (attempt >= maxAttempts) {
+          logger.error(
+            { err, issueId: input.issue.id, executionWorkspaceId: input.workspaceId, attempts: attempt },
+            "failed to clear the reopen-pending flag after an unconsumed reopen; the rebuilt worktree may leak until the flag clears",
+          );
+          return;
+        }
+        logger.warn(
+          { err, issueId: input.issue.id, executionWorkspaceId: input.workspaceId, attempt },
+          "retry the clear of the reopen-pending flag after an unconsumed reopen",
+        );
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
   }
 
   async function destroyReusableSandboxLeasesForTerminalIssue(issue: {
@@ -5490,6 +5667,7 @@ export function issueRoutes(
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
+    const rawUpdatedSince = req.query.updatedSince as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -5556,6 +5734,10 @@ export function issueRoutes(
         return;
       }
     }
+    if (rawUpdatedSince !== undefined && !Number.isFinite(new Date(rawUpdatedSince).getTime())) {
+      res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -5592,6 +5774,7 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
       req,
@@ -5873,7 +6056,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -5948,6 +6131,12 @@ export function issueRoutes(
       issueWorkMode: issue.workMode,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const documentReviewContext = await buildDocumentReviewContext({
+      db,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      includeForIssueComment: wakeCommentId !== null,
+    });
 
     const response = {
       issue: {
@@ -6020,6 +6209,7 @@ export function issueRoutes(
           }
         : null,
       planReviewContext,
+      documentReviewContext,
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
     };
     res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, response));
@@ -6027,7 +6217,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -6058,7 +6248,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -6103,7 +6293,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/subtree", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -6152,8 +6342,9 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
+    const requestStartedAt = performance.now();
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
@@ -6212,6 +6403,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.setHeader("Server-Timing", `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
     res.json({
       ...issue,
       ...inboxArchiveFields,
@@ -6239,7 +6431,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
@@ -6247,7 +6439,7 @@ export function issueRoutes(
 
   router.put("/issues/:id/watchdog", validate(upsertIssueWatchdogSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -6288,7 +6480,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -6325,7 +6517,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const active = await revalidateActiveSourceRecoveryForRead({
@@ -6612,7 +6804,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
@@ -6621,7 +6813,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const objects = await externalObjectsSvc.listForIssue(issue.id);
@@ -6630,7 +6822,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const summary = await externalObjectsSvc.getIssueSummary(issue.id);
@@ -6691,7 +6883,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
@@ -6702,7 +6894,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -6728,7 +6920,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -6798,7 +6990,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -7137,7 +7329,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -7800,7 +7992,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -8380,7 +8572,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
+    const sourceIssue = await getAccessibleResource(req, res, getIssueById(req, sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
@@ -8925,6 +9117,8 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
+            requestAddsExplicitBlockers:
+              Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -8944,10 +9138,6 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       (Object.keys(updateFields).length > 0 || reviewRequest !== undefined || hiddenAtRaw !== undefined);
 
-    if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
-    }
     if (
       isAgentWorkUpdate &&
       !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
@@ -9273,7 +9463,43 @@ export function issueRoutes(
         },
       }, postCommitActivityPublications);
     };
+    // Reopen the closed isolated workspace only after every access, validation,
+    // and policy gate passes, and just before the update persists. A rejected
+    // update must not rebuild and republish the workspace as active, because the
+    // issue stays terminal and the reaper then skips the leaked workspace.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
+    if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
+      const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+        req,
+        res,
+        existing,
+        closedExecutionWorkspace,
+      );
+      if (reopenOutcome === null) {
+        return;
+      }
+      // Install the guard only when this request set the reopen-pending flag. A
+      // concurrent request that found the workspace already open must not clear
+      // the flag that the actual reopener still owns.
+      if (reopenOutcome.outcome === "reopened") {
+        reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
+      }
+    }
     let issue: Awaited<ReturnType<typeof svc.update>>;
+    // Clear the reopen-pending flag if this update leaves the issue terminal, so
+    // the rebuilt worktree does not leak. The guard reads `issue` when the
+    // response ends, so it also covers a null return and a thrown error. It clears
+    // only the fence this request installed, keyed by its generation.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue: existing,
+      workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
+      finalIssueStatus: () => issue?.status,
+    });
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -10000,7 +10226,10 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Re-derive closed-ness from the post-update issue so a status change
+        // like in_progress -> done with a closure comment does not enqueue a
+        // stale issue_commented wake for an already-completed issue.
+        const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -10326,14 +10555,45 @@ export function issueRoutes(
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
-    if (closedExecutionWorkspace) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
-    }
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    let updated;
+
+    // Reopen the closed isolated workspace only after the run-id gate passes. A
+    // rejected checkout must not rebuild and republish the workspace as active.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
+    if (closedExecutionWorkspace) {
+      const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+        req,
+        res,
+        issue,
+        closedExecutionWorkspace,
+      );
+      if (reopenOutcome === null) {
+        return;
+      }
+      // Install the guard only when this request set the reopen-pending flag. A
+      // concurrent request that found the workspace already open must not clear
+      // the flag that the actual reopener still owns.
+      if (reopenOutcome.outcome === "reopened") {
+        reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
+      }
+    }
+    let updated: Awaited<ReturnType<typeof svc.checkout>> | undefined;
+    // Clear the reopen-pending flag if the checkout leaves the issue terminal, so
+    // the rebuilt worktree does not leak. The guard reads `updated` when the
+    // response ends, so it covers a null return and a thrown error. It clears only
+    // the fence this request installed, keyed by its generation.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
+      finalIssueStatus: () => updated?.status,
+    });
     try {
       updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     } catch (error) {
@@ -10466,7 +10726,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const afterCommentId =
@@ -10497,36 +10757,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const actor = getActorInfo(req);
-    const interactionSvc = issueThreadInteractionService(db);
-    const supersededInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
-    await logExpiredRequestConfirmations({
-      issue,
-      interactions: supersededInteractions,
-      actor,
-      source: "issue.interactions.catchup_superseded_by_comment",
-    });
-    await queueExpiredInteractionReviewPathRecovery({
-      issue,
-      interactions: supersededInteractions,
-      actor,
-      source: "issue.interactions.catchup_superseded_by_comment",
-    });
-    const closedIssueInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
-      agentId: actor.agentId,
-      userId: actor.actorType === "user" ? actor.actorId : null,
-    });
-    await logExpiredRequestConfirmations({
-      issue,
-      interactions: closedIssueInteractions,
-      actor,
-      source: "issue.interactions.catchup_issue_closed",
-    });
-
-    const interactions = await interactionSvc.listForIssue(id);
+    const interactions = await issueThreadInteractionService(db).listForIssue(id);
     res.json(interactions);
   });
 
@@ -11088,7 +11322,7 @@ export function issueRoutes(
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const comment = await svc.getComment(commentId);
@@ -11249,7 +11483,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
@@ -11262,7 +11496,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback traces" });
@@ -11342,10 +11576,6 @@ export function issueRoutes(
       metadata: req.body.metadata,
     })) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
-    if (closedExecutionWorkspace) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
-    }
 
     const actor = getActorInfo(req);
     const commentPresentation = req.body.presentation ??
@@ -11426,10 +11656,48 @@ export function issueRoutes(
       return;
     }
     if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    // Reopen the closed isolated workspace only after every access, resume-intent,
+    // blocker, and run-cap gate passes. A rejected comment must not rebuild and
+    // republish the workspace as active, because the issue stays terminal and the
+    // reaper then skips the leaked workspace.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
+    if (closedExecutionWorkspace) {
+      const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+        req,
+        res,
+        issue,
+        closedExecutionWorkspace,
+      );
+      if (reopenOutcome === null) {
+        return;
+      }
+      // Install the guard only when this request set the reopen-pending flag. A
+      // concurrent request that found the workspace already open must not clear
+      // the flag that the actual reopener still owns.
+      if (reopenOutcome.outcome === "reopened") {
+        reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
+      }
+    }
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
+    // Clear the reopen-pending flag if this comment leaves the issue terminal, so
+    // the rebuilt worktree does not leak. A comment reopens the workspace but only
+    // moves the issue out of the terminal state when it resumes the work. The
+    // guard reads `currentIssue` when the response ends, so it covers a rejected
+    // move, a thrown error, and a comment that keeps the issue terminal. It clears
+    // only the fence this request installed, keyed by its generation.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
+      finalIssueStatus: () => currentIssue.status,
+    });
     let issueBeforeCommentDecision = issue;
     let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -12117,7 +12385,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, issueId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);

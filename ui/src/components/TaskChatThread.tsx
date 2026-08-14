@@ -44,11 +44,10 @@ import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
 import { RecoveryProgressLine } from "@/components/RecoveryProgressLine";
 import { deriveRecoveryPresentation } from "@/lib/recovery-display";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
+import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
-import { workModeInEffectAt } from "@/lib/issue-timeline-events";
-import { workModeMetaFor } from "@/lib/work-mode-meta";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -122,7 +121,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
-    workModeChanges,
     issueBrief,
     feedbackVotes,
     feedbackDataSharingPreference = "prompt",
@@ -143,6 +141,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     canBreakGlassRecoveryAction,
     reconcileRecoveryActionPending,
     canFalsePositiveRecoveryAction,
+    onInterruptQueued,
+    interruptingQueuedRunId,
   } = props;
 
   // Recovery in the chat shell. A live or queued recovery owner renders as the
@@ -187,27 +187,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [linkedRuns]);
 
-  // Each agent reply is tagged with the mode its request ran under: the
-  // issue's work mode at the reply's run start (comment.runId linkage),
-  // reconstructed from the activity feed's work-mode switch history — not the
-  // issue's current mode, which the user may have changed since.
-  const agentModeLabelFor = useCallback(
-    (comment: IssueChatComment) => {
-      const runMeta = comment.runId ? linkedRunMetaById.get(comment.runId) : undefined;
-      const atMs = toMs(runMeta?.startedAt ?? runMeta?.createdAt ?? comment.createdAt);
-      return workModeMetaFor(workModeInEffectAt(workModeChanges ?? [], atMs, issueWorkMode)).label;
-    },
-    [linkedRunMetaById, workModeChanges, issueWorkMode],
-  );
   const commentItems = useMemo(
     () => commentsToTaskChatItems(comments, {
       agentMap,
       userLabelMap,
       currentUserId,
       issueAssigneeAgentId,
-      agentModeLabelFor,
     }),
-    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId, agentModeLabelFor],
+    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
@@ -591,6 +578,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [onVote, feedbackVoteByTargetId, feedbackDataSharingPreference, feedbackTermsUrl],
   );
 
+  const renderQueuedAction = useCallback(
+    (item: TaskChatMessageItem) => {
+      const runId = item.queueTargetRunId;
+      if (item.optimistic !== "queued" || !runId || !onInterruptQueued) return null;
+
+      const isInterrupting = interruptingQueuedRunId === runId;
+      return (
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-(length:--text-micro)"
+          disabled={isInterrupting}
+          onClick={() => void onInterruptQueued(runId)}
+        >
+          {isInterrupting ? "Interrupting…" : "Interrupt"}
+        </Button>
+      );
+    },
+    [interruptingQueuedRunId, onInterruptQueued],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -654,6 +662,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            renderQueuedAction={renderQueuedAction}
             tail={tailRunId ? (
               <div data-testid="task-chat-live-transcript">
                 <TaskChatLiveRunPill
@@ -679,13 +688,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       </div>
       {showComposer ? (
         <div
+          data-testid="task-chat-composer-dock"
           className={cn(
             "sticky",
             // Mobile mirrors the flag-off thread's dock: lifted above the
-            // safe-area inset (and clear of the auto-hiding bottom nav), above
-            // page content in the document-flow stacking context.
-            isMobile ? "bottom-(--sz-calc-8) z-20" : "bottom-0 z-10",
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+            // safe-area inset and clear of the auto-hiding bottom nav, above
+            // page content in the document-flow stacking context. The bottom
+            // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
+            // the nav height while the nav is visible so the composer's action
+            // row is never occluded, and drops it back to the safe-area dock
+            // when the nav auto-hides (PAP-495). transition-[bottom] rides the
+            // nav's own 200ms slide; the offset only changes on nav toggles, so
+            // it never animates mid-scroll.
+            isMobile
+              ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
+              : "bottom-0 z-10",
+            // Match the thread width on mobile. Keep the intentionally
+            // narrower composer on larger screens.
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
           )}
         >
           {recoveryAction && recoveryDisplay ? (
