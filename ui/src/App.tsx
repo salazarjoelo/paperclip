@@ -1,7 +1,9 @@
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
+import { useState, useEffect, useCallback } from "react";
 import { Layout } from "./components/Layout";
+import { StartupScreen } from "./components/startup-screen";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
@@ -527,6 +529,55 @@ function NoCompaniesStartPage() {
 }
 
 export function App() {
+  const [booted, setBooted] = useState(() => {
+    try { return sessionStorage.getItem("edugame_booted") === "1"; } catch { return false; }
+  });
+  const [bootLoading, setBootLoading] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [bootProgress, setBootProgress] = useState({
+    docker: "idle" as "idle" | "running" | "done" | "error",
+    database: "idle" as "idle" | "running" | "done" | "error",
+    api: "idle" as "idle" | "running" | "done" | "error",
+  });
+
+  const runBootCheck = useCallback(async () => {
+    setBootLoading(true);
+    setBootError(null);
+    setBootProgress({ docker: "running", database: "idle", api: "idle" });
+    try {
+      const res = await fetch("/api/health");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setBootProgress({ docker: "done", database: "done", api: "done" });
+      if (data.status === "ok") {
+        try { sessionStorage.setItem("edugame_booted", "1"); } catch { /* ignore */ }
+        setTimeout(() => setBooted(true), 600);
+      } else {
+        setBootError("Server unhealthy");
+      }
+    } catch (err) {
+      setBootProgress({ docker: "error", database: "idle", api: "error" });
+      setBootError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setBootLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!booted) runBootCheck();
+  }, [booted, runBootCheck]);
+
+  if (!booted) {
+    return (
+      <StartupScreen
+        onStart={runBootCheck}
+        loading={bootLoading}
+        progress={bootProgress}
+        error={bootError}
+      />
+    );
+  }
+
   return (
     <>
       <Routes>

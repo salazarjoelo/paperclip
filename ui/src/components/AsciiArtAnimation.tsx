@@ -4,32 +4,32 @@ const CHARS = [" ", ".", "·", "▪", "▫", "○"] as const;
 const TARGET_FPS = 24;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
-const PAPERCLIP_SPRITES = [
+const EDUGAME_SPRITES = [
   [
-    "  ╭────╮ ",
-    " ╭╯╭──╮│ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ ╰──╯│ ",
-    " ╰─────╯ ",
+    " ╭──────╮ ",
+    " │ ╭────╯ ",
+    " │ │      ",
+    " │ ╰───╮  ",
+    " │ ╭───╯  ",
+    " │ │      ",
+    " │ ╰────╮ ",
+    " ╰──────╯ ",
   ],
   [
-    " ╭─────╮ ",
-    " │╭──╮╰╮ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " │╰──╯ │ ",
-    " ╰────╯  ",
+    " ╭──────╮ ",
+    " ╰────╮ │ ",
+    "      │ │ ",
+    " ╭───╯  │ ",
+    " ╰───╮  │ ",
+    "      │ │ ",
+    " ╭────╯ │ ",
+    " ╰──────╯ ",
   ],
 ] as const;
 
-type PaperclipSprite = (typeof PAPERCLIP_SPRITES)[number];
+type EdugameSprite = (typeof EDUGAME_SPRITES)[number];
 
-interface Clip {
+interface EdugameSymbol {
   x: number;
   y: number;
   vx: number;
@@ -37,7 +37,7 @@ interface Clip {
   life: number;
   maxLife: number;
   drift: number;
-  sprite: PaperclipSprite;
+  sprite: EdugameSprite;
   width: number;
   height: number;
 }
@@ -53,7 +53,7 @@ function measureChar(container: HTMLElement): { w: number; h: number } {
   return { w: rect.width, h: rect.height };
 }
 
-function spriteSize(sprite: PaperclipSprite): { width: number; height: number } {
+function spriteSize(sprite: EdugameSprite): { width: number; height: number } {
   let width = 0;
   for (const row of sprite) width = Math.max(width, row.length);
   return { width, height: sprite.length };
@@ -77,9 +77,9 @@ export function AsciiArtAnimation() {
     let charH = 11;
     let trail = new Float32Array(0);
     let colWave = new Float32Array(0);
-    let rowWave = new Float32Array(0);
-    let clipMask = new Uint16Array(0);
-    let clips: Clip[] = [];
+    let rowWave = new Float32Array(rows);
+    let symbolMask = new Uint16Array(0);
+    let symbols: EdugameSymbol[] = [];
     let lastOutput = "";
 
     function toGlyph(value: number): string {
@@ -99,13 +99,13 @@ export function AsciiArtAnimation() {
       trail = new Float32Array(cellCount);
       colWave = new Float32Array(cols);
       rowWave = new Float32Array(rows);
-      clipMask = new Uint16Array(cellCount);
-      clips = clips.filter((clip) => {
+      symbolMask = new Uint16Array(cellCount);
+      symbols = symbols.filter((symbol) => {
         return (
-          clip.x > -clip.width - 2 &&
-          clip.x < cols + 2 &&
-          clip.y > -clip.height - 2 &&
-          clip.y < rows + 2
+          symbol.x > -symbol.width - 2 &&
+          symbol.x < cols + 2 &&
+          symbol.y > -symbol.height - 2 &&
+          symbol.y < rows + 2
         );
       });
       lastOutput = "";
@@ -130,7 +130,7 @@ export function AsciiArtAnimation() {
       for (let baseRow = 1; baseRow < rows - 9; baseRow += gapY) {
         const startX = Math.floor(baseRow / gapY) % 2 === 0 ? 2 : 10;
         for (let baseCol = startX; baseCol < cols - 10; baseCol += gapX) {
-          const sprite = PAPERCLIP_SPRITES[(baseCol + baseRow) % PAPERCLIP_SPRITES.length]!;
+          const sprite = EDUGAME_SPRITES[(baseCol + baseRow) % EDUGAME_SPRITES.length]!;
           for (let sr = 0; sr < sprite.length; sr++) {
             const line = sprite[sr]!;
             for (let sc = 0; sc < line.length; sc++) {
@@ -150,8 +150,8 @@ export function AsciiArtAnimation() {
       lastOutput = output;
     }
 
-    function spawnClip() {
-      const sprite = PAPERCLIP_SPRITES[Math.floor(Math.random() * PAPERCLIP_SPRITES.length)]!;
+    function spawnSymbol() {
+      const sprite = EDUGAME_SPRITES[Math.floor(Math.random() * EDUGAME_SPRITES.length)]!;
       const size = spriteSize(sprite);
       const edge = Math.random();
       let x = 0;
@@ -171,7 +171,7 @@ export function AsciiArtAnimation() {
         vy = y < 0 ? 0.028 + Math.random() * 0.034 : -(0.028 + Math.random() * 0.034);
       }
 
-      clips.push({
+      symbols.push({
         x,
         y,
         vx,
@@ -185,11 +185,11 @@ export function AsciiArtAnimation() {
       });
     }
 
-    function stampClip(clip: Clip, alpha: number) {
-      const baseCol = Math.round(clip.x);
-      const baseRow = Math.round(clip.y);
-      for (let sr = 0; sr < clip.sprite.length; sr++) {
-        const line = clip.sprite[sr]!;
+    function stampSymbol(symbol: EdugameSymbol, alpha: number) {
+      const baseCol = Math.round(symbol.x);
+      const baseRow = Math.round(symbol.y);
+      for (let sr = 0; sr < symbol.sprite.length; sr++) {
+        const line = symbol.sprite[sr]!;
         const row = baseRow + sr;
         if (row < 0 || row >= rows) continue;
         for (let sc = 0; sc < line.length; sc++) {
@@ -200,7 +200,7 @@ export function AsciiArtAnimation() {
           const idx = row * cols + col;
           const stroke = ch === "│" || ch === "─" ? 0.8 : 0.92;
           trail[idx] = Math.max(trail[idx] ?? 0, alpha * stroke);
-          clipMask[idx] = ch.charCodeAt(0);
+          symbolMask[idx] = ch.charCodeAt(0);
         }
       }
     }
@@ -216,37 +216,37 @@ export function AsciiArtAnimation() {
 
       const cellCount = cols * rows;
       const targetCount = Math.max(3, Math.floor(cellCount / 2200));
-      while (clips.length < targetCount) spawnClip();
+      while (symbols.length < targetCount) spawnSymbol();
 
       for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
-      clipMask.fill(0);
+      symbolMask.fill(0);
 
-      for (let i = clips.length - 1; i >= 0; i--) {
-        const clip = clips[i]!;
-        clip.life += delta;
+      for (let i = symbols.length - 1; i >= 0; i--) {
+        const symbol = symbols[i]!;
+        symbol.life += delta;
 
-        const wobbleX = Math.sin((clip.y + clip.drift + tick * 0.12) * 0.09) * 0.0018;
-        const wobbleY = Math.cos((clip.x - clip.drift - tick * 0.09) * 0.08) * 0.0014;
-        clip.vx = (clip.vx + wobbleX) * 0.998;
-        clip.vy = (clip.vy + wobbleY) * 0.998;
+        const wobbleX = Math.sin((symbol.y + symbol.drift + tick * 0.12) * 0.09) * 0.0018;
+        const wobbleY = Math.cos((symbol.x - symbol.drift - tick * 0.09) * 0.08) * 0.0014;
+        symbol.vx = (symbol.vx + wobbleX) * 0.998;
+        symbol.vy = (symbol.vy + wobbleY) * 0.998;
 
-        clip.x += clip.vx * delta;
-        clip.y += clip.vy * delta;
+        symbol.x += symbol.vx * delta;
+        symbol.y += symbol.vy * delta;
 
         if (
-          clip.life >= clip.maxLife ||
-          clip.x < -clip.width - 2 ||
-          clip.x > cols + 2 ||
-          clip.y < -clip.height - 2 ||
-          clip.y > rows + 2
+          symbol.life >= symbol.maxLife ||
+          symbol.x < -symbol.width - 2 ||
+          symbol.x > cols + 2 ||
+          symbol.y < -symbol.height - 2 ||
+          symbol.y > rows + 2
         ) {
-          clips.splice(i, 1);
+          symbols.splice(i, 1);
           continue;
         }
 
-        const life = clip.life / clip.maxLife;
+        const life = symbol.life / symbol.maxLife;
         const alpha = life < 0.12 ? life / 0.12 : life > 0.88 ? (1 - life) / 0.12 : 1;
-        stampClip(clip, alpha);
+        stampSymbol(symbol, alpha);
       }
 
       for (let c = 0; c < cols; c++) colWave[c] = Math.sin(c * 0.08 + tick * 0.06);
@@ -256,9 +256,9 @@ export function AsciiArtAnimation() {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const idx = r * cols + c;
-          const clipChar = clipMask[idx];
-          if (clipChar > 0) {
-            output += String.fromCharCode(clipChar);
+          const symbolChar = symbolMask[idx];
+          if (symbolChar > 0) {
+            output += String.fromCharCode(symbolChar);
             continue;
           }
           const ambient = (colWave[c] + rowWave[r]) * 0.08 + 0.1;
@@ -341,7 +341,7 @@ export function AsciiArtAnimation() {
     <pre
       ref={preRef}
       className="w-full h-full m-0 p-0 overflow-hidden text-muted-foreground/60 select-none leading-none"
-      style={{ fontSize: "var(--text-micro)", fontFamily: "monospace" }}
+      style={{ fontSize: "11px", fontFamily: "monospace" }}
       aria-hidden="true"
     />
   );
