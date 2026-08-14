@@ -49,6 +49,7 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import { useTranslation } from "react-i18next";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -271,6 +272,7 @@ function OnboardingWizardInner({
     onboardingRouteDismissed: routeDismissed,
     setOnboardingRouteDismissed: setRouteDismissed,
   } = useDialog();
+  const { t } = useTranslation();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -885,7 +887,7 @@ function OnboardingWizardInner({
       return result;
     } catch (err) {
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        err instanceof Error ? err.message : t('onboarding.agent.test_fail')
       );
       return null;
     } finally {
@@ -1001,7 +1003,7 @@ function OnboardingWizardInner({
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(err instanceof Error ? err.message : t('onboarding.company.error_create'));
     } finally {
       setLoading(false);
     }
@@ -1045,8 +1047,8 @@ function OnboardingWizardInner({
         if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
           setError(
             discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
+              ? t('onboarding.agent.error_opencode_none')
+              : t('onboarding.agent.error_opencode_unavailable', { model: selectedModelId })
           );
           return;
         }
@@ -1113,7 +1115,7 @@ function OnboardingWizardInner({
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(err instanceof Error ? err.message : t('onboarding.agent.error_create'));
     } finally {
       setLoading(false);
     }
@@ -1274,7 +1276,7 @@ function OnboardingWizardInner({
                     <div>
                       <h3 className="font-medium">
                         {step === 3
-                          ? "Create your first agent"
+                          ? t('onboarding.agent.title')
                           : step === 4
                             ? "Connect a model"
                             : "Review"}
@@ -1684,7 +1686,7 @@ function OnboardingWizardInner({
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
+                      {t('onboarding.agent.adapter_type_label')}
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
@@ -1711,7 +1713,7 @@ function OnboardingWizardInner({
                         >
                           {opt.recommended && (
                             <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                              Recommended
+                              {t('onboarding.agent.recommended')}
                             </Badge>
                           )}
                           <opt.icon className="h-4 w-4" />
@@ -1787,7 +1789,7 @@ function OnboardingWizardInner({
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
+                          {t('onboarding.agent.model_label')}
                         </label>
                         <Popover
                           open={modelOpen}
@@ -1808,7 +1810,7 @@ function OnboardingWizardInner({
                                   : model ||
                                     (adapterType === "opencode_local"
                                       ? "Select model (required)"
-                                      : "Default")}
+                                      : t('onboarding.agent.default_model'))}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -1819,7 +1821,7 @@ function OnboardingWizardInner({
                           >
                             <input
                               className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
+                              placeholder={t('onboarding.agent.search_models')}
                               value={modelSearch}
                               onChange={(e) => setModelSearch(e.target.value)}
                               autoFocus
@@ -1835,7 +1837,7 @@ function OnboardingWizardInner({
                                   setModelOpen(false);
                                 }}
                               >
-                                Default
+                                {t('onboarding.agent.default_model')}
                               </button>
                             )}
                             <div className="max-h-(--sz-240px) overflow-y-auto">
@@ -1904,7 +1906,7 @@ function OnboardingWizardInner({
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
+                          {adapterEnvLoading ? t('onboarding.agent.testing') : "Test now"}
                         </Button>
                       </div>
 
@@ -1942,7 +1944,7 @@ function OnboardingWizardInner({
                             onClick={() => void handleUnsetAnthropicApiKey()}
                           >
                             {unsetAnthropicLoading
-                              ? "Retrying..."
+                              ? t('onboarding.agent.retrying')
                               : "Unset ANTHROPIC_API_KEY"}
                           </Button>
                         </div>
@@ -1963,8 +1965,8 @@ function OnboardingWizardInner({
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
-                            Prompt:{" "}
-                            <span className="font-mono">Respond with hello.</span>
+                            {t('onboarding.agent.prompt')}:{" "}
+                            <span className="font-mono">{t('onboarding.agent.hello_prompt')}</span>
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
@@ -2075,7 +2077,7 @@ function OnboardingWizardInner({
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back
+                      {t('onboarding.buttons.back')}
                     </Button>
                   )}
                 </div>
@@ -2089,7 +2091,7 @@ function OnboardingWizardInner({
                         setStep(2);
                       }}
                     >
-                      Next
+                      {t('onboarding.buttons.next')}
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
@@ -2104,7 +2106,7 @@ function OnboardingWizardInner({
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Confirm mission"}
+                      {loading ? t('onboarding.buttons.creating') : "Confirm mission"}
                     </Button>
                   )}
                   {step === 3 && (
@@ -2113,7 +2115,7 @@ function OnboardingWizardInner({
                       disabled={!agentName.trim()}
                       onClick={() => setStep(4)}
                     >
-                      Next
+                      {t('onboarding.buttons.next')}
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}

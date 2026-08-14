@@ -14,6 +14,7 @@ import {
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 interface StartupScreenProps {
   onStart: () => void;
@@ -27,9 +28,9 @@ interface StartupScreenProps {
 }
 
 const STEPS = [
-  { key: 'docker' as const, label: 'Docker Engine', icon: Server },
-  { key: 'database' as const, label: 'Database', icon: Database },
-  { key: 'api' as const, label: 'API Server', icon: Code2 },
+  { key: 'docker' as const, label_key: 'startup.docker', icon: Server },
+  { key: 'database' as const, label_key: 'startup.database', icon: Database },
+  { key: 'api' as const, label_key: 'startup.api', icon: Code2 },
 ];
 
 function StatusIcon({ status }: { status: 'idle' | 'running' | 'done' | 'error' }) {
@@ -46,11 +47,12 @@ function StatusIcon({ status }: { status: 'idle' | 'running' | 'done' | 'error' 
 }
 
 function StatusLabel({ status }: { status: 'idle' | 'running' | 'done' | 'error' }) {
+  const { t } = useTranslation();
   switch (status) {
     case 'done':
-      return <span className="text-emerald-400 text-xs font-mono">READY</span>;
+      return <span className="text-emerald-400 text-xs font-mono">{t('startup.ready')}</span>;
     case 'error':
-      return <span className="text-orange-500 text-xs font-mono">ERROR</span>;
+      return <span className="text-orange-500 text-xs font-mono">{t('startup.error')}</span>;
     case 'running':
       return <span className="text-orange-400 text-xs font-mono">...</span>;
     default:
@@ -89,6 +91,7 @@ function GridOverlay() {
 }
 
 export function StartupScreen({ onStart, loading, progress, error }: StartupScreenProps) {
+  const { t } = useTranslation();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -158,10 +161,10 @@ export function StartupScreen({ onStart, loading, progress, error }: StartupScre
                   )}
                 >
                   <Power className="w-5 h-5 mr-3" />
-                  POWER ON
+                  {t('startup.power_on')}
                 </Button>
                 <p className="mt-4 text-[10px] text-zinc-500 font-mono tracking-widest animate-pulse">
-                  CONNECTING…
+                  {t('startup.connecting')}
                 </p>
               </motion.div>
             )}
@@ -170,7 +173,7 @@ export function StartupScreen({ onStart, loading, progress, error }: StartupScre
               <motion.div key="progress" className="w-full space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">
-                    INITIALIZING
+                    {t('startup.initializing')}
                   </span>
                   <span className="text-[10px] text-orange-400 font-mono">{progressPercent}%</span>
                 </div>
@@ -189,7 +192,7 @@ export function StartupScreen({ onStart, loading, progress, error }: StartupScre
                     >
                       <StatusIcon status={progress[step.key]} />
                       <span className={cn('flex-1 text-[11px] font-mono tracking-wide', progress[step.key] === 'idle' ? 'text-zinc-600' : 'text-zinc-300')}>
-                        {step.label}
+                        {t(step.label_key)}
                       </span>
                       <StatusLabel status={progress[step.key]} />
                     </motion.div>
@@ -211,11 +214,11 @@ export function StartupScreen({ onStart, loading, progress, error }: StartupScre
               <motion.div key="error" className="w-full border border-orange-950 bg-orange-950/20 p-6 space-y-4">
                 <div className="flex items-center gap-3">
                   <ShieldAlert className="w-5 h-5 text-orange-500" />
-                  <span className="text-xs font-bold text-orange-400 font-mono">ERROR</span>
+                  <span className="text-xs font-bold text-orange-400 font-mono">{t('startup.error')}</span>
                 </div>
                 <p className="text-[11px] text-orange-200/60 font-mono leading-relaxed">{error}</p>
                 <Button variant="outline" size="sm" onClick={onStart} className="w-full border-orange-500/30 text-orange-400 hover:bg-orange-500/10">
-                  RETRY
+                  {t('startup.retry')}
                 </Button>
               </motion.div>
             )}

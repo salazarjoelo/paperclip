@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Archive, Eye, Flag } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -88,6 +89,7 @@ export function IssueRow({
   chevronInGuide = false,
   showDivider = false,
 }: IssueRowProps) {
+  const { t } = useTranslation();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   // A row participates in the unread system whenever `unreadState` is supplied
@@ -116,7 +118,7 @@ export function IssueRow({
         "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
         selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
       )}
-      aria-label="Mark as read"
+      aria-label={t('common_ui.mark_as_read')}
     >
       <span
         className={cn(

@@ -1,6 +1,6 @@
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { useTranslation } from "@/i18n";
+import { useTranslation } from "react-i18next";
 import { useState, useEffect, useCallback } from "react";
 import { Layout } from "./components/Layout";
 import { StartupScreen } from "./components/startup-screen";
@@ -396,6 +396,7 @@ function legacyToolsRedirectTarget(tab?: string) {
 }
 
 function OnboardingRoutePage() {
+  const { t } = useTranslation();
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
@@ -414,15 +415,15 @@ function OnboardingRoutePage() {
     : null;
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? t("auth.add_agent_to", { company: matchedCompany.name })
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? t("auth.create_another_company")
+      : t("auth.new_company");
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? t("auth.run_onboarding_again_agent")
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? t("auth.run_onboarding_again_company")
+      : t("auth.get_started_first_company");
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -437,7 +438,7 @@ function OnboardingRoutePage() {
                 : openOnboarding()
             }
           >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            {matchedCompany ? t("auth.add_agent") : t("auth.start_onboarding")}
           </Button>
         </div>
       </div>
@@ -513,14 +514,14 @@ function NoCompaniesStartPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {t("app.noCompanies.title", { defaultValue: "Create your first company" })}
+          {t("auth.new_company")}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
+          {t("auth.get_started_company")}
         </p>
         <div className="mt-4">
           <Button onClick={() => openOnboarding()}>
-            {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
+            {t("auth.new_company")}
           </Button>
         </div>
       </div>

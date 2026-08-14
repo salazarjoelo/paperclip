@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { useTranslation } from "react-i18next";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -438,13 +439,13 @@ function fileBaseName(filename: string) {
   return filename.replace(/\.[^.]+$/, "");
 }
 
-function slugifyDocumentKey(input: string) {
+function slugifyDocumentKey(input: string, t: (key: string) => string) {
   const slug = input
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || "document";
+  return slug || t("issue.detail.document");
 }
 
 function titleizeFilename(input: string) {
@@ -513,17 +514,18 @@ function mergeOptimisticFeedbackVote(
 }
 
 function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; agentMap: Map<string, Agent>; userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> }) {
+  const { t } = useTranslation();
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
+  if (evt.actorType === "system") return <Identity name={t("issue.detail.actor_system")} size="sm" />;
   if (evt.actorType === "user") {
     const profile = userProfileMap?.get(id);
-    return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
+    return <Identity name={profile?.label ?? t("issue.detail.actor_board")} avatarUrl={profile?.image} size="sm" />;
   }
-  return <Identity name={id || "Unknown"} size="sm" />;
+  return <Identity name={id || t("issue.detail.actor_unknown")} size="sm" />;
 }
 
 export type AttributionActor = {
@@ -748,6 +750,7 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
+  const { t } = useTranslation();
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
   const taskChatShellEnabled = !classicTaskInterfaceEnabled;
@@ -793,7 +796,7 @@ function IssueDetailLoadingState({
               ) : (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
                   <ProjectTile size="xs" />
-                  No project
+                  {t("issue.detail.no_project")}
                 </span>
               )}
             </>
@@ -934,7 +937,7 @@ function InboxMobileToolbar({
                 onClick={() => { onHide(); setMenuOpen(false); }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this task
+                {t("issue.detail.hide_issue")}
               </button>
             )}
           </PopoverContent>
@@ -1440,6 +1443,7 @@ function IssueDetailActivityTab({
   handoffFocusSignal = 0,
   externalReferences,
 }: IssueDetailActivityTabProps) {
+  const { t } = useTranslation();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1551,9 +1555,9 @@ function IssueDetailActivityTab({
     <>
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">{t("issue.detail.cost_summary")}</div>
           {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !hasIssueTreeCost ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
+            <div className="text-xs text-muted-foreground">{t("issue.detail.no_cost_data")}</div>
           ) : (
             <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
               <div className="flex flex-wrap gap-3">
@@ -1565,10 +1569,10 @@ function IssueDetailActivityTab({
                 ) : null}
                 {issueCostSummary.hasTokens ? (
                   <span>
-                    Tokens {formatTokens(issueCostSummary.totalTokens)}
+                    {t("issue.detail.tokens_label")} {formatTokens(issueCostSummary.totalTokens)}
                     {issueCostSummary.cached > 0
-                      ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                      : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                      ? ` (${t("issue.detail.input_label").toLowerCase()} ${formatTokens(issueCostSummary.input)}, ${t("issue.detail.output_label").toLowerCase()} ${formatTokens(issueCostSummary.output)}, ${t("issue.detail.cached_label").toLowerCase()} ${formatTokens(issueCostSummary.cached)})`
+                      : ` (${t("issue.detail.input_label").toLowerCase()} ${formatTokens(issueCostSummary.input)}, ${t("issue.detail.output_label").toLowerCase()} ${formatTokens(issueCostSummary.output)})`}
                   </span>
                 ) : null}
                 {issueCostSummary.hasRuntime ? (
@@ -1592,10 +1596,10 @@ function IssueDetailActivityTab({
                     })}
                   </span>
                   <span>
-                    Tokens {formatTokens(issueTreeCostTokens)}
+                    {t("issue.detail.tokens_label")} {formatTokens(issueTreeCostTokens)}
                     {issueTreeCostSummary.cachedInputTokens > 0
-                      ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
-                      : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
+                      ? ` (${t("issue.detail.input_label").toLowerCase()} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${t("issue.detail.output_label").toLowerCase()} ${formatTokens(issueTreeCostSummary.outputTokens)}, ${t("issue.detail.cached_label").toLowerCase()} ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
+                      : ` (${t("issue.detail.input_label").toLowerCase()} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${t("issue.detail.output_label").toLowerCase()} ${formatTokens(issueTreeCostSummary.outputTokens)})`}
                   </span>
                   {issueTreeCostSummary.runCount > 0 ? (
                     <span>
@@ -1691,6 +1695,7 @@ function IssueDetailActivityTab({
 }
 
 export function IssueDetail() {
+  const { t } = useTranslation();
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   // Classic Task Interface (flag: enableClassicTaskInterface): with the flag
@@ -2158,7 +2163,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("issue.detail.me") });
     }
     return options;
   }, [agents, companyMembers?.users, currentUserId]);
@@ -2815,8 +2820,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issue.detail.comment_failed_title"),
+        body: err instanceof Error ? err.message : t("issue.detail.comment_failed_body"),
         tone: "error",
       });
     },
@@ -3080,8 +3085,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issue.detail.comment_failed_title"),
+        body: err instanceof Error ? err.message : t("issue.detail.comment_failed_body"),
         tone: "error",
       });
     },
@@ -3161,8 +3166,8 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
-        body: "The active run is stopping so queued comments can continue next.",
+        title: t("issue.detail.interrupt_requested"),
+        body: t("issue.detail.interrupt_requested_body"),
         tone: "success",
       });
     },
@@ -3177,8 +3182,8 @@ export function IssueDetail() {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: t("issue.detail.interrupt_failed"),
+        body: err instanceof Error ? err.message : t("issue.detail.interrupt_failed"),
         tone: "error",
       });
     },
@@ -3305,11 +3310,11 @@ export function IssueDetail() {
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
             ? variables.allowSharing
-              ? "Feedback saved. Future votes will share"
-              : "Feedback saved. Future votes will stay local"
+              ? t("issue.detail.feedback_future_share")
+              : t("issue.detail.feedback_future_local")
             : variables.allowSharing
-              ? "Feedback saved and sharing enabled"
-              : "Feedback saved",
+              ? t("issue.detail.feedback_sharing_enabled")
+              : t("issue.detail.feedback_saved"),
         tone: "success",
       });
     },
@@ -3318,8 +3323,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("issue.detail.feedback_saved_failed"),
+        body: err instanceof Error ? err.message : t("audits.unknown_error"),
         tone: "error",
       });
     },
@@ -3336,14 +3341,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.detail.upload_failed"));
     },
   });
 
   const importMarkdownDocument = useMutation({
     mutationFn: async (file: File) => {
       const baseName = fileBaseName(file.name);
-      const key = slugifyDocumentKey(baseName);
+      const key = slugifyDocumentKey(baseName, t);
       const existing = (issue?.documentSummaries ?? []).find((doc) => doc.key === key) ?? null;
       const body = await file.text();
       const inferredTitle = titleizeFilename(baseName);
@@ -3361,7 +3366,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.detail.document_import_failed"));
     },
   });
 
@@ -3373,7 +3378,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.detail.delete_failed"));
     },
   });
 
@@ -3394,7 +3399,7 @@ export function IssueDetail() {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
       pushToast({
-        title: "Task archived from inbox",
+        title: t("issue.detail.issue_archived_toast"),
         tone: "success",
         action: {
           label: "Undo",
@@ -3410,8 +3415,8 @@ export function IssueDetail() {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
       pushToast({
-        title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this task from the inbox",
+        title: t("issue.detail.archive_failed_toast"),
+        body: err instanceof Error ? err.message : t("issue.detail.archive_failed_toast"),
         tone: "error",
       });
     },
@@ -3795,7 +3800,7 @@ export function IssueDetail() {
     try {
       await copyTextToClipboard(md);
       setCopied(true);
-      pushToast({ title: "Copied to clipboard", tone: "success" });
+      pushToast({ title: t("issue.detail.copied_toast"), tone: "success" });
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       pushToast({
@@ -4372,10 +4377,10 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? t("issue.detail.uploading") : (
           <>
-            <span className="hidden sm:inline">Upload attachment</span>
-            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">{t("issue.detail.upload_attachment")}</span>
+            <span className="sm:hidden">{t("issue.detail.upload_label")}</span>
           </>
         )}
       </Button>
@@ -4776,7 +4781,7 @@ export function IssueDetail() {
             onSave={(description) => updateIssue.mutateAsync({ description })}
             as="p"
             className="text-sm leading-7 text-foreground"
-            placeholder="Add a description..."
+            placeholder={t("issue.detail.description_placeholder")}
             multiline
             foldable
             mentions={mentionOptions}
@@ -4868,7 +4873,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className={cn("flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive", shellSectionClass)}>
           <EyeOff className="h-4 w-4 shrink-0" />
-          This task is hidden
+          {t("issue.detail.hidden_notice")}
         </div>
       )}
       {activePauseHold && (
@@ -4954,7 +4959,7 @@ export function IssueDetail() {
       {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-tasks</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">{t("issue.detail.sub_issues")}</h3>
           </div>
           <IssuesList
             issues={childIssues}
