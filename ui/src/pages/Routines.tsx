@@ -1212,7 +1212,7 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending ? t('routines.creating') : t('routines.create')}
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
@@ -1287,7 +1287,7 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message={t('routines.no_routines')}
               />
             </div>
           ) : sortedRoutines.length === 0 ? (

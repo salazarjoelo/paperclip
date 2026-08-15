@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -108,37 +109,38 @@ function FinanceSummaryCard({
   estimatedDebitCents: number;
   eventCount: number;
 }) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Finance ledger</CardTitle>
+        <CardTitle className="text-base">{t('costs.ledger.finance_title')}</CardTitle>
         <CardDescription>
-          Account-level charges that do not map to a single inference request.
+          {t('costs.ledger.finance_desc')}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 px-5 pb-5 pt-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Debits"
+          label={t('costs.ledger.debits')}
           value={formatCents(debitCents)}
-          subtitle={`${eventCount} total event${eventCount === 1 ? "" : "s"} in range`}
+          subtitle={t('costs.ledger.total_events', { count: eventCount, plural: eventCount === 1 ? "" : "s" })}
           icon={ArrowUpRight}
         />
         <MetricTile
-          label="Credits"
+          label={t('costs.ledger.credits')}
           value={formatCents(creditCents)}
-          subtitle="Refunds, offsets, and credit returns"
+          subtitle={t('costs.ledger.finance_credits_desc')}
           icon={ArrowDownLeft}
         />
         <MetricTile
-          label="Net"
+          label={t('costs.ledger.net')}
           value={formatCents(netCents)}
-          subtitle="Debit minus credit for the selected period"
+          subtitle={t('costs.ledger.finance_net_desc')}
           icon={ReceiptText}
         />
         <MetricTile
-          label="Estimated"
+          label={t('costs.ledger.estimated')}
           value={formatCents(estimatedDebitCents)}
-          subtitle="Estimated debits that are not yet invoice-authoritative"
+          subtitle={t('costs.ledger.finance_estimated_desc')}
           icon={Coins}
         />
       </CardContent>
@@ -147,6 +149,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -168,8 +171,8 @@ export function Costs() {
   } = useDateRange();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t('costs.title') }]);
+  }, [setBreadcrumbs, t]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
   const todayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -529,7 +532,7 @@ export function Costs() {
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message={t('costs.empty.select_company')} />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
