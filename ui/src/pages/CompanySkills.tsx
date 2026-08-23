@@ -1880,6 +1880,7 @@ function CatalogDetailPane({
   onOpenInstalled: (skillId: string) => void;
   loadingPrimaryAction: boolean;
 }) {
+  const { t } = useTranslation();
   if (!skill) {
     return <EmptyState icon={Boxes} message="Select a catalog skill to inspect." />;
   }
@@ -2413,7 +2414,7 @@ function SkillList({
     }
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        No skills match this filter.
+        {t('skills.no_matches')}
       </div>
     );
   }
@@ -4252,7 +4253,7 @@ export function CompanySkills() {
     setBreadcrumbs([
       { label: t("common.skills"), href: "/skills" },
       ...(isStudioNew
-        ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }]
+        ? [{ label: studioForkFromId ? t("skills.fork_skill") : t("skills.new_skill") }]
         : activeDetail
           ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
           : routeSkillToken
@@ -4302,7 +4303,7 @@ export function CompanySkills() {
       setSource("");
     },
     onError: (error) => {
-      reportSkillError(error, "Skill import failed", "Failed to import skill source.", "Importing skills");
+      reportSkillError(error, t("skills.import_failed"), t("skills.import_source_failed"), "Importing skills");
     },
   });
 
@@ -4313,11 +4314,11 @@ export function CompanySkills() {
     ),
     onMutate: (projectId) => {
       setScanStatusMessage(
-        projectId ? "Refreshing project skills..." : "Scanning project workspaces for skills...",
+        projectId ? t("skills.refreshing_projects") : t("skills.scanning_projects"),
       );
     },
     onSuccess: async (result) => {
-      setScanStatusMessage("Refreshing skills list...");
+      setScanStatusMessage(t("skills.refreshing_list"));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
@@ -4326,13 +4327,13 @@ export function CompanySkills() {
       setScanStatusMessage(summary);
       pushToast({
         tone: "success",
-        title: "Project skill scan complete",
+        title: t("skills.scan_complete"),
         body: summary,
       });
       if (result.conflicts[0]) {
         pushToast({
           tone: "warn",
-          title: "Skill conflicts found",
+          title: t("skills.conflicts_found"),
           body: result.conflicts[0].reason,
         });
       } else if (result.warnings[0]) {
@@ -4345,7 +4346,7 @@ export function CompanySkills() {
     },
     onError: (error) => {
       setScanStatusMessage(null);
-      reportSkillError(error, "Project skill scan failed", "Failed to scan project workspaces.", "Scanning projects for skills");
+      reportSkillError(error, t("skills.scan_failed"), t("skills.scanning_failed"), "Scanning projects for skills");
     },
   });
 
@@ -4393,8 +4394,8 @@ export function CompanySkills() {
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        title: t("common_ui.save_failed"),
+        body: error instanceof Error ? error.message : t("common_ui.failed_save"),
       });
     },
   });
