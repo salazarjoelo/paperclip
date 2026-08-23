@@ -57,30 +57,30 @@ export type ExistingCompanyOnboardingStep =
   | typeof ONBOARDING_AGENT_STEP;
 
 /**
- * The step a company that already exists belongs on.
+ * The step a company that already exists belongs on: always the agent.
  *
- * `undefined` means the mission is not known: the goal lookup has not answered
- * yet, or it failed. Both read as "no mission". That direction of error costs
- * the customer the mission step, which they can answer; the opposite would
- * skip a question nobody answered and leave the company without a mission.
+ * This used to branch on whether the company had a mission, sending a company
+ * without one to `ONBOARDING_MISSION_STEP` first. Onboarding no longer asks —
+ * the mission is collected later, in the tenant app — so the branch had become
+ * a way to reach a question the arc had stopped asking. It survived because
+ * Cloud's naming screen dropped its own mission field, which left every
+ * Cloud-created company looking mission-less on arrival, and so every walk
+ * detoured through a step the design had removed.
+ *
+ * The parameter is gone rather than ignored: callers were running a goal lookup
+ * to compute it, and an argument that cannot change the answer is an invitation
+ * to keep computing it.
  */
-export function onboardingStepForCompany(
-  companyHasMission: boolean | undefined,
-): ExistingCompanyOnboardingStep {
-  return companyHasMission === true ? ONBOARDING_AGENT_STEP : ONBOARDING_MISSION_STEP;
+export function onboardingStepForCompany(): ExistingCompanyOnboardingStep {
+  return ONBOARDING_AGENT_STEP;
 }
 
 export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
-  /**
-   * Whether the matched company already has its mission (a company-level
-   * goal). See {@link onboardingStepForCompany} for what `undefined` means.
-   */
-  companyHasMission?: boolean;
 }): { initialStep: 1 | ExistingCompanyOnboardingStep; companyId?: string } | null {
-  const { pathname, companyPrefix, companies, companyHasMission } = params;
+  const { pathname, companyPrefix, companies } = params;
 
   if (!isOnboardingPath(pathname)) return null;
 
@@ -99,7 +99,7 @@ export function resolveRouteOnboardingOptions(params: {
   }
 
   return {
-    initialStep: onboardingStepForCompany(companyHasMission),
+    initialStep: onboardingStepForCompany(),
     companyId: matchedCompany.id,
   };
 }
@@ -133,6 +133,40 @@ export function shouldRouteAgentlessCompanyToOnboarding(params: {
   // Already there. Redirecting onto the path we are on is the loop that
   // "finished the wizard but created no agent" would otherwise spin in.
   return !isOnboardingPath(params.pathname);
+}
+
+/**
+ * Whether the wizard's Back button is offered on the current step.
+ *
+ * A run never walks back behind the step it entered on: those steps either do
+ * not apply to it (an existing company is already named, and its mission is
+ * hydrated rather than asked for) or were completed elsewhere. Walking back
+ * into step 1 while holding a company is the sharpest case — that step creates
+ * a company, so it would make a second one.
+ */
+export function canGoBackFromOnboardingStep(params: {
+  currentStep: number;
+  entryStep: number;
+}): boolean {
+  return params.currentStep > 1 && params.currentStep > params.entryStep;
+}
+
+/**
+ * Whether a completed progress-bar segment can be clicked to jump back to it.
+ *
+ * Same bound as {@link canGoBackFromOnboardingStep}. The progress bar applies
+ * only the "already completed" half of the rule, which lets a run entered on
+ * an existing company jump to the name and mission steps the Back button
+ * deliberately withholds.
+ */
+export function canJumpToOnboardingStep(params: {
+  targetStep: number;
+  currentStep: number;
+  entryStep: number;
+}): boolean {
+  return (
+    params.targetStep < params.currentStep && params.targetStep >= params.entryStep
+  );
 }
 
 export function shouldRedirectCompanylessRouteToOnboarding(params: {

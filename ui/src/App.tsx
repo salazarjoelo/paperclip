@@ -1,15 +1,16 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { useTranslation } from "react-i18next";
-import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
-import { StartupScreen } from "./components/startup-screen";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
+import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
+import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -70,13 +71,11 @@ import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
-import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
-import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
+import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { InstanceSettings } from "./pages/InstanceSettings";
-import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -95,9 +94,14 @@ import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
   isOnboardingWizardActive,
+  onboardingStepForCompany,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
-import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+
+const CompanyExport = lazy(() =>
+  import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
+);
 
 function boardRoutes() {
   return (
@@ -114,7 +118,14 @@ function boardRoutes() {
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
-      <Route path="company/export/*" element={<CompanyExport />} />
+      <Route
+        path="company/export/*"
+        element={(
+          <Suspense fallback={<PaperclipLoading />}>
+            <CompanyExport />
+          </Suspense>
+        )}
+      />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
@@ -144,18 +155,32 @@ function boardRoutes() {
         <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
         <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       </Route>
-      <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
-      <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
-      <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
-      <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
-      <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
-      <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
-      <Route path="company/settings/instance/access" element={<InstanceAccess />} />
-      <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
-      <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
-      <Route path="company/settings/instance/plugins" element={<PluginManager />} />
-      <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
-      <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.profile" />}>
+        <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
+      </Route>
+      <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.environments" />}>
+        <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+        <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
+        <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
+        <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.heartbeats" />}>
+        <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
+        <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.plugins" />}>
+        <Route path="company/settings/instance/plugins" element={<PluginManager />} />
+        <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.adapters" />}>
+        <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/studio/new" element={<SkillStudio />} />
@@ -340,6 +365,7 @@ function LegacySettingsRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { hidden: hiddenSettings } = useHiddenSettings();
 
   if (loading) {
     return <PaperclipLoading />;
@@ -365,8 +391,11 @@ function LegacySettingsRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  const normalizedPath = normalizeRememberedInstanceSettingsPath(
-    `${location.pathname}${location.search}${location.hash}`,
+  const normalizedPath = filterHiddenInstanceSettingsPath(
+    normalizeRememberedInstanceSettingsPath(
+      `${location.pathname}${location.search}${location.hash}`,
+    ),
+    hiddenSettings,
   );
 
   return (
@@ -395,13 +424,14 @@ function legacyToolsRedirectTarget(tab?: string) {
   return `/apps/advanced/${tab}`;
 }
 
-function OnboardingRoutePage() {
-  const { t } = useTranslation();
+export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
-
+  const matchedCompany = companyPrefix
+    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
+    : null;
   // The OnboardingWizard auto-opens on this route (and can also be opened
   // explicitly). While it is showing it covers the whole screen, so the
   // launcher card below must not stay interactive behind it — otherwise users
@@ -410,20 +440,17 @@ function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
-  const matchedCompany = companyPrefix
-    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
-    : null;
 
   const title = matchedCompany
-    ? t("auth.add_agent_to", { company: matchedCompany.name })
+    ? `Add another agent to ${matchedCompany.name}`
     : companies.length > 0
-      ? t("auth.create_another_company")
-      : t("auth.new_company");
+      ? "Create another company"
+      : "Create your first company";
   const description = matchedCompany
-    ? t("auth.run_onboarding_again_agent")
+    ? "Run onboarding again to add an agent and a starter task for this company."
     : companies.length > 0
-      ? t("auth.run_onboarding_again_company")
-      : t("auth.get_started_first_company");
+      ? "Run onboarding again to create another company and seed its first agent."
+      : "Get started by creating a company and your first agent.";
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -434,11 +461,20 @@ function OnboardingRoutePage() {
           <Button
             onClick={() =>
               matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                ? openOnboarding({
+                    // "Add another agent" to a company that already has its
+                    // mission must not stop to ask for the mission again. An
+                    // unsettled or failed lookup reads as "no mission" and
+                    // costs the step, which the customer can pass - and the
+                    // mission step now updates the existing goal rather than
+                    // adding a second one.
+                    initialStep: onboardingStepForCompany(),
+                    companyId: matchedCompany.id,
+                  })
                 : openOnboarding()
             }
           >
-            {matchedCompany ? t("auth.add_agent") : t("auth.start_onboarding")}
+            {matchedCompany ? "Add Agent" : "Start Onboarding"}
           </Button>
         </div>
       </div>
@@ -514,14 +550,14 @@ function NoCompaniesStartPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {t("auth.new_company")}
+          {t("app.noCompanies.title", { defaultValue: "Create your first company" })}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t("auth.get_started_company")}
+          {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
         </p>
         <div className="mt-4">
           <Button onClick={() => openOnboarding()}>
-            {t("auth.new_company")}
+            {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
           </Button>
         </div>
       </div>
@@ -530,55 +566,6 @@ function NoCompaniesStartPage() {
 }
 
 export function App() {
-  const [booted, setBooted] = useState(() => {
-    try { return sessionStorage.getItem("edugame_booted") === "1"; } catch { return false; }
-  });
-  const [bootLoading, setBootLoading] = useState(false);
-  const [bootError, setBootError] = useState<string | null>(null);
-  const [bootProgress, setBootProgress] = useState({
-    docker: "idle" as "idle" | "running" | "done" | "error",
-    database: "idle" as "idle" | "running" | "done" | "error",
-    api: "idle" as "idle" | "running" | "done" | "error",
-  });
-
-  const runBootCheck = useCallback(async () => {
-    setBootLoading(true);
-    setBootError(null);
-    setBootProgress({ docker: "running", database: "idle", api: "idle" });
-    try {
-      const res = await fetch("/api/health");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setBootProgress({ docker: "done", database: "done", api: "done" });
-      if (data.status === "ok") {
-        try { sessionStorage.setItem("edugame_booted", "1"); } catch { /* ignore */ }
-        setTimeout(() => setBooted(true), 600);
-      } else {
-        setBootError("Server unhealthy");
-      }
-    } catch (err) {
-      setBootProgress({ docker: "error", database: "idle", api: "error" });
-      setBootError(err instanceof Error ? err.message : "Connection failed");
-    } finally {
-      setBootLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!booted) runBootCheck();
-  }, [booted, runBootCheck]);
-
-  if (!booted) {
-    return (
-      <StartupScreen
-        onStart={runBootCheck}
-        loading={bootLoading}
-        progress={bootProgress}
-        error={bootError}
-      />
-    );
-  }
-
   return (
     <>
       <Routes>
