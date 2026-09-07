@@ -387,7 +387,7 @@ const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity|rate limit reached|temporarily overloaded)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -397,6 +397,22 @@ export type AdapterFailureRecoveryClassification =
   | null;
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
+  // Z.AI / GLM coding-plan format: "Your limit will reset at 2026-09-08 02:47:04".
+  // The wall clock timezone is ambiguous, so cap at the provider's own 5-hour
+  // window to never park an agent longer than the quota period itself.
+  const isoReset = error.match(
+    /(?:limit will reset|limits? reset|resets?)\s+at\s+(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/i,
+  );
+  if (isoReset) {
+    const [, y, mo, d, h, mi, sec] = isoReset;
+    const retryAt = new Date(Date.UTC(
+      Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec ?? "0"),
+    ));
+    if (Number.isNaN(retryAt.getTime())) return null;
+    const cappedAt = Math.min(retryAt.getTime(), now.getTime() + 5 * 60 * 60 * 1000);
+    const flooredAt = Math.max(cappedAt, now.getTime() + 60 * 1000);
+    return new Date(flooredAt);
+  }
   const match = error.match(
     /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );
@@ -471,7 +487,10 @@ export function classifyAdapterFailureForRecovery(
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    // ACP (claude_local) surfaces upstream 429/529 as a generic turn failure;
+    // the text-based quota patterns below decide whether it is quota-related.
+    latestRun.errorCode !== "acpx_turn_failed"
   ) {
     return null;
   }
