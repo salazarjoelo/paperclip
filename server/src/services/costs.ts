@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, ne, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -37,6 +37,8 @@ async function getMonthlySpendTotal(
     gte(costEvents.occurredAt, start),
     lt(costEvents.occurredAt, end),
   ];
+  // Estimated events are list-price visibility, never cash spend (EDU-92).
+  conditions.push(ne(costEvents.costStatus, "estimated"));
   if (scope.agentId) {
     conditions.push(eq(costEvents.agentId, scope.agentId));
   }
@@ -111,9 +113,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       if (!company) throw notFound("Company not found");
 
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       const [{ total }] = await db
         .select({
@@ -247,6 +251,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             and(
               eq(costEvents.companyId, companyId),
               eq(costEvents.issueId, issues.id),
+              ne(costEvents.costStatus, "estimated"),
             ),
           )
           .where(
@@ -278,9 +283,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgent: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       return db
         .select({
@@ -310,9 +317,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       return db
         .select({
@@ -342,9 +351,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byBiller: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       return db
         .select({
@@ -401,6 +412,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               and(
                 eq(costEvents.companyId, companyId),
                 gte(costEvents.occurredAt, since),
+                ne(costEvents.costStatus, "estimated"),
               ),
             )
             .groupBy(costEvents.provider)
@@ -423,9 +435,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgentModel: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       // single query: group by agent + provider + model.
       // the (companyId, agentId, occurredAt) composite index covers this well.
@@ -485,9 +499,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .as("run_project_links");
 
       const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${runProjectLinks.projectId})`;
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      // Estimated events are list-price visibility, never cash spend (EDU-92).
+      conditions.push(ne(costEvents.costStatus, "estimated"));
 
       const costCentsExpr = sumAsNumber(costEvents.costCents);
 

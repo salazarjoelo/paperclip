@@ -832,7 +832,9 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+// "estimated" = equivalente a precio de lista para visibilidad (EDU-92);
+// NO es efectivo gastado: presupuestos y vistas de gasto lo excluyen.
+export const COST_STATUSES = ["reported", "unpriced", "estimated"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [

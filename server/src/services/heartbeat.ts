@@ -101,6 +101,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { estimateSubscriptionCostCents, resolveSubscriptionModelRates } from "./subscription-estimates.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -13945,6 +13946,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    // EDU-92: estimated (non-cash) list-price cost for subscription-billed runs.
+    // Emitted as a separate cost_status="estimated" event; budgets and cash
+    // views exclude it (see budgets.ts / costs.ts).
+    const subscriptionRates =
+      billingType === "subscription_included" ? resolveSubscriptionModelRates(result.model) : null;
+    const estimatedCostCents = subscriptionRates
+      ? estimateSubscriptionCostCents({ inputTokens, cachedInputTokens, outputTokens }, subscriptionRates)
+      : 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
       inputTokens,
@@ -13990,6 +13999,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+
+      if (estimatedCostCents > 0) {
+        await costs.createEvent(agent.companyId, {
+          heartbeatRunId: run.id,
+          agentId: agent.id,
+          issueId: ledgerScope.issueId,
+          projectId: ledgerScope.projectId,
+          billingCode: ledgerScope.billingCode,
+          provider,
+          biller,
+          billingType,
+          costStatus: "estimated",
+          model: result.model ?? "unknown",
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          costCents: estimatedCostCents,
+          occurredAt: new Date(),
+        });
+      }
     }
   }
 

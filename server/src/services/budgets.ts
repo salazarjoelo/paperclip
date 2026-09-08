@@ -146,7 +146,13 @@ async function computeObservedAmount(
 ) {
   if (policy.metric !== "billed_cents") return 0;
 
-  const conditions = [eq(costEvents.companyId, policy.companyId)];
+  // Estimated costs (cost_status="estimated") are list-price equivalents for
+  // visibility, not billed cash; budget enforcement stays on billed spend
+  // only. See EDU-92.
+  const conditions = [
+    eq(costEvents.companyId, policy.companyId),
+    ne(costEvents.costStatus, "estimated"),
+  ];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
