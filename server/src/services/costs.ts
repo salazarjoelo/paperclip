@@ -298,6 +298,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          estimatedCents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'estimated' then ${costEvents.costCents} else 0 end), 0)::double precision`,
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
