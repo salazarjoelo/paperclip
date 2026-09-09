@@ -54,6 +54,31 @@ const CLAUDE_ALIAS_FAMILY_TARGET: Record<string, string> = {
   haiku: "glm-5.3-flash",
 };
 
+// DeepSeek V4.1 Flash — anuncio oficial DeepSeek 2026-09-09 (efectivo
+// 04:00 UTC 2026-09-10). Peak UTC: 01:00-04:00 y 06:00-10:00 lun-vie;
+// fuera de ese horario (y fines de semana) aplica la mitad.
+const DEEPSEEK_V41_FLASH_PEAK = { inputPerMTokens: 0.30, cachedInputPerMTokens: 0.006, outputPerMTokens: 1.20 };
+const DEEPSEEK_V41_FLASH_OFFPEAK = { inputPerMTokens: 0.15, cachedInputPerMTokens: 0.003, outputPerMTokens: 0.60 };
+
+export function deepseekIsPeakUtc(now: Date = new Date()): boolean {
+  const day = now.getUTCDay();
+  const h = now.getUTCHours();
+  if (day === 0 || day === 6) return false;
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+export function estimateDeepSeekCostCents(
+  usage: SubscriptionTokenUsage,
+  now: Date = new Date(),
+): number {
+  const rates = deepseekIsPeakUtc(now) ? DEEPSEEK_V41_FLASH_PEAK : DEEPSEEK_V41_FLASH_OFFPEAK;
+  const usd =
+    (usage.inputTokens / 1_000_000) * rates.inputPerMTokens +
+    (usage.cachedInputTokens / 1_000_000) * rates.cachedInputPerMTokens +
+    (usage.outputTokens / 1_000_000) * rates.outputPerMTokens;
+  return Math.max(0, Math.round(usd * 100));
+}
+
 export function resolveSubscriptionModelRates(model: string | null | undefined): SubscriptionModelRates | null {
   const normalized = (model ?? "").trim().toLowerCase();
   if (!normalized) return null;

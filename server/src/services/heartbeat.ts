@@ -101,7 +101,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
-import { estimateSubscriptionCostCents, resolveSubscriptionModelRates } from "./subscription-estimates.js";
+import { estimateDeepSeekCostCents, estimateSubscriptionCostCents, resolveSubscriptionModelRates } from "./subscription-estimates.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -13943,8 +13943,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+    // DeepSeek models: the adapter pricing table is stale for deepseek (reports
+    // ~50x the official price). Book official V4.1 Flash tariff estimates
+    // instead of the inflated reported cost (anuncio DeepSeek 2026-09-09).
+    const isDeepSeekModel = (result.model ?? "").toLowerCase().startsWith("deepseek");
+    const deepseekEstimatedCents = isDeepSeekModel
+      ? estimateDeepSeekCostCents({ inputTokens, cachedInputTokens, outputTokens })
+      : 0;
+    const billedCostUsd = isDeepSeekModel ? null : resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = isDeepSeekModel
+      ? deepseekEstimatedCents
+      : normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     // EDU-92: estimated (non-cash) list-price cost for subscription-billed runs.
     // Emitted as a separate cost_status="estimated" event; budgets and cash
@@ -13954,12 +13963,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const estimatedCostCents = subscriptionRates
       ? estimateSubscriptionCostCents({ inputTokens, cachedInputTokens, outputTokens }, subscriptionRates)
       : 0;
-    const costStatus = resolveLedgerCostStatus({
-      costUsd: billedCostUsd,
-      inputTokens,
-      cachedInputTokens,
-      outputTokens,
-    });
+    const costStatus =
+      isDeepSeekModel && deepseekEstimatedCents > 0
+        ? "estimated"
+        : resolveLedgerCostStatus({
+            costUsd: billedCostUsd,
+            inputTokens,
+            cachedInputTokens,
+            outputTokens,
+          });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);

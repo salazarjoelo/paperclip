@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deepseekIsPeakUtc, estimateDeepSeekCostCents } from "./subscription-estimates.js";
 import {
   estimateSubscriptionCostCents,
   resolveSubscriptionEstimatedCostCents,
@@ -151,5 +152,26 @@ describe("resolveSubscriptionEstimatedCostCents", () => {
         usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
       }),
     ).toBeNull();
+  });
+});
+
+describe("estimateDeepSeekCostCents (tarifas oficiales V4.1 Flash)", () => {
+  const peak = new Date("2026-09-10T02:00:00Z");   // jueves 02:00 UTC -> pico
+  const offpeak = new Date("2026-09-10T12:00:00Z"); // jueves 12:00 UTC -> fuera de pico
+  const sabado = new Date("2026-09-12T02:00:00Z");  // sábado -> siempre fuera de pico
+
+  it("aplica tarifa pico en ventana pico UTC", () => {
+    expect(estimateDeepSeekCostCents({ inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 }, peak)).toBe(30);
+    expect(estimateDeepSeekCostCents({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 1_000_000 }, peak)).toBe(120);
+  });
+
+  it("aplica tarifa off-peak fuera de la ventana y en fines de semana", () => {
+    expect(estimateDeepSeekCostCents({ inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 }, offpeak)).toBe(15);
+    expect(estimateDeepSeekCostCents({ inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 }, sabado)).toBe(15);
+    expect(estimateDeepSeekCostCents({ inputTokens: 0, cachedInputTokens: 10_000_000, outputTokens: 0 }, offpeak)).toBe(3);
+  });
+
+  it("nunca devuelve negativos", () => {
+    expect(estimateDeepSeekCostCents({ inputTokens: -5, cachedInputTokens: 0, outputTokens: 0 }, offpeak)).toBe(0);
   });
 });
