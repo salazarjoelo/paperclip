@@ -286,19 +286,19 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
-      // Estimated events are list-price visibility, never cash spend (EDU-92).
-      conditions.push(ne(costEvents.costStatus, "estimated"));
+      // byAgent SÍ incluye estimated rows: separa cash/estimated por suma,
+      // y los tokens son la quema total del agente (EDU-92).
 
       return db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
           agentStatus: agents.status,
-          costCents: sumAsNumber(costEvents.costCents),
+          costCents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} <> 'estimated' then ${costEvents.costCents} else 0 end), 0)::double precision`,
+          estimatedCents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'estimated' then ${costEvents.costCents} else 0 end), 0)::double precision`,
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
-          estimatedCents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'estimated' then ${costEvents.costCents} else 0 end), 0)::double precision`,
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
