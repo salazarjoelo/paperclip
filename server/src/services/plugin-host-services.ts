@@ -2462,6 +2462,74 @@ export function buildHostServices(
           }
         }
 
+        // Actor-less plugin comments (no actorUserId, no authorAgentId) must
+        // also wake the assignee and @mentioned agents - otherwise review
+        // feedback and webhook mirrors written through the SDK stall the task
+        // forever (H04). Agent-attributed comments stay wake-free: the agent
+        // authored them during its own run.
+        if (!params.actorUserId && !params.authorAgentId) {
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
+          const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+          if (
+            postCommentIssue.assigneeAgentId
+            && postCommentIssue.status !== "done"
+            && postCommentIssue.status !== "cancelled"
+          ) {
+            wakeups.set(postCommentIssue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: { issueId: issue.id, commentId: comment.id, mutation: "comment" },
+              requestedByActorType: "system",
+              requestedByActorId: pluginId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                sourceCommentId: comment.id,
+                wakeReason: "issue_commented",
+                source: `plugin:${pluginKey}`,
+              },
+            });
+          }
+          try {
+            const mentionedIds = await issues.findMentionedAgents(companyId, params.body);
+            for (const mentionedId of mentionedIds) {
+              if (!wakeups.has(mentionedId)) {
+                wakeups.set(mentionedId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_comment_mentioned",
+                  payload: { issueId: issue.id, commentId: comment.id },
+                  requestedByActorType: "system",
+                  requestedByActorId: pluginId,
+                  contextSnapshot: {
+                    issueId: issue.id,
+                    taskId: issue.id,
+                    wakeCommentId: comment.id,
+                    wakeReason: "issue_comment_mentioned",
+                    source: `plugin:${pluginKey}`,
+                  },
+                });
+              }
+            }
+          } catch (err) {
+            logger.warn({ err, issueId: issue.id, pluginId }, "failed to resolve @-mentions for plugin comment");
+          }
+          for (const [agentId, wakeup] of wakeups.entries()) {
+            heartbeat.wakeup(agentId, wakeup).catch((err) => logger.warn({
+              err,
+              issueId: issue.id,
+              agentId,
+            }, "failed to wake agent on plugin comment"));
+          }
+        }
+
         return comment;
       },
       async createInteraction(params) {
@@ -3223,7 +3291,12 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        const taskKey = params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;
+        // sendMessage/list/close only reach rows whose taskKey carries the
+        // plugin:<key>:session: prefix, so a caller-supplied key must be
+        // namespaced under it or the session becomes unreachable (H01).
+        const requestedKey =
+          typeof params.taskKey === "string" && params.taskKey.trim() ? params.taskKey.trim() : randomUUID();
+        const taskKey = `plugin:${pluginKey}:session:${requestedKey}`;
 
         const row = await db
           .insert(agentTaskSessionsTable)
@@ -3242,6 +3315,7 @@ export function buildHostServices(
 
         return {
           sessionId: row!.id,
+          taskKey,
           agentId: params.agentId,
           companyId,
           status: "active" as const,

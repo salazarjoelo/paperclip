@@ -160,18 +160,44 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  const [activity] = await db.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: input.actorType,
-    actorId: input.actorId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
-    responsibleUserId,
-    details: redactedDetails,
-  }).returning({ id: activityLog.id });
+  let activity: { id: string } | undefined;
+  try {
+    [activity] = await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      agentId: input.agentId ?? null,
+      runId: input.runId ?? null,
+      responsibleUserId,
+      details: redactedDetails,
+    }).returning({ id: activityLog.id });
+  } catch (err) {
+    // Agent-minted API tokens may carry a runId claim with no backing row in
+    // heartbeat_runs (no adapter run backs it). Run linkage is optional
+    // context, not integrity: drop it and persist the activity anyway.
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    const pgCode = (err as { code?: string }).code ?? cause?.code;
+    const msg = String((err as Error).message ?? "") + " " + String(cause?.message ?? "");
+    if (input.runId && (pgCode === "23503" || msg.includes("activity_log_run_id_heartbeat_runs_id_fk"))) {
+      [activity] = await db.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        agentId: input.agentId ?? null,
+        runId: null,
+        responsibleUserId,
+        details: redactedDetails,
+      }).returning({ id: activityLog.id });
+    } else {
+      throw err;
+    }
+  }
 
   const payload = {
     actorType: input.actorType,

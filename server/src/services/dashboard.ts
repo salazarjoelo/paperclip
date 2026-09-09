@@ -84,9 +84,10 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
-      const [{ monthSpend }] = await db
+      const [{ monthSpend, estimatedMonthSpend }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          estimatedMonthSpend: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'estimated' then ${costEvents.costCents} else 0 end), 0)::double precision`,
         })
         .from(costEvents)
         .where(
@@ -97,6 +98,9 @@ export function dashboardService(db: Db) {
         );
 
       const monthSpendCents = Number(monthSpend);
+      // Estimated portion of the month total (subscription lanes priced at
+      // list for visibility); monthSpendCents includes it. See EDU-92.
+      const estimatedMonthSpendCents = Number(estimatedMonthSpend);
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed run whose retry succeeded is pulled out of the headline
@@ -196,6 +200,7 @@ export function dashboardService(db: Db) {
         tasks: taskCounts,
         costs: {
           monthSpendCents,
+          estimatedMonthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },

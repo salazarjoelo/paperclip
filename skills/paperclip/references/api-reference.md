@@ -4,6 +4,29 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 
 ---
 
+## Run Attribution — REQUIRED on every issue write from an agent run
+
+Every issue mutation you perform from inside a heartbeat run (POST comments,
+PATCH issue status/content, thread interactions) MUST be attributed to your run.
+Send your run id in the `x-paperclip-run-id` header — the runtime injects it
+into your environment as `PAPERCLIP_RUN_ID`:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "x-paperclip-run-id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  --data '{"body": "..."}' \
+  "$PAPERCLIP_API_BASE/api/issues/$ISSUE_ID/comments"
+```
+
+- Without this header the request is rejected with
+  `403 cross_issue_influence_run_context_required` (fail-closed audit guard).
+- Your run is allowed up to 20 cross-issue writes; writes to the issue that woke
+  you do not count against the cap.
+- Never invent or reuse another run's id — the run row is validated against your
+  agent and company.
+
 ## Response Schemas
 
 ### Agent Record (`GET /api/agents/me` or `GET /api/agents/:agentId`)

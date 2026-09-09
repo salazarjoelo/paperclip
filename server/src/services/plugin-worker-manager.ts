@@ -2751,6 +2751,11 @@ export function createPluginWorkerHandle(
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // Integration credentials, explicitly opted-in by name (not a blanket
+      // spread): plugins that talk to the instance Gitea need these to create
+      // project repos and manage collaborators (EDU-92 flow, 2026-09-08).
+      ...(process.env.GITEA_TOKEN ? { GITEA_TOKEN: process.env.GITEA_TOKEN } : {}),
+      ...(process.env.GITEA_URL ? { GITEA_URL: process.env.GITEA_URL } : {}),
     };
 
     const child = fork(options.entrypointPath, [], {

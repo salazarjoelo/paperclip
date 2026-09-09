@@ -40,6 +40,8 @@ export interface DashboardSummary {
   };
   costs: {
     monthSpendCents: number;
+    /** Estimated (non-cash) portion of monthSpendCents. */
+    estimatedMonthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
   };
